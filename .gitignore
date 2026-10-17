@@ -1,0 +1,11 @@
+build
+build/*
+out
+.workbuddy
+
+# emscripten 产物（源文件只有 web/shell.html + public/ 下的字体）
+web/index.html
+web/index.js
+web/index.wasm
+web/index.data
+.wasm

@@ -1,0 +1,6 @@
+InlayHints:
+  Enabled: Yes
+  ParameterNames: Yes   # 函数调用时显示参数名
+  DeducedTypes: Yes     # auto 变量显示推导出的类型
+  Designators: Yes      # 结构体初始化显示成员名
+  BlockEnd: No          # 可选，关闭代码块末尾的提示，避免画面太乱

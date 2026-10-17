@@ -1,0 +1,24 @@
+# 语言标准
+Standard: Latest
+# 缩进
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+# 列宽限制（超过这个宽度自动换行）
+ColumnLimit: 120
+# 括号风格：Attach（类似 JavaScript，左括号不换行）
+BreakBeforeBraces: Attach
+# 指针和引用对齐：int* a
+PointerAlignment: Left
+# 允许短小的函数写在一行
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+# 连续赋值对齐
+AlignConsecutiveAssignments: Consecutive
+AlignConsecutiveDeclarations: Consecutive
+# 头文件排序（类似 ESLint 的 import/order）
+SortIncludes: CaseInsensitive
+IncludeBlocks: Regroup
+# 命名空间缩进（C++17 之后推荐不缩进）
+NamespaceIndentation: None

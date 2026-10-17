@@ -1,0 +1,7 @@
+{
+    "editor.fontLigatures": false,
+    "clangd.arguments": [
+        "--compile-commands-dir=${workspaceFolder}/build",
+        "--query-driver=E:/LLVM/bin/clang*.exe,E:/emsdk/upstream/emscripten/em++*,E:/emsdk/upstream/emscripten/emcc*"
+    ]
+}
