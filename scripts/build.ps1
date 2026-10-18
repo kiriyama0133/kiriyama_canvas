@@ -194,7 +194,7 @@ Write-Host "==> 字体: $selection  ($Config)"
 if ($LASTEXITCODE -ne 0) { throw "cmake 配置失败（退出码 $LASTEXITCODE）。" }
 
 # ---------------------------------------------------------------- 构建
-$targets = @('kiriyama_text_demo', 'kiriyama_table_demo', 'kiriyama_pie_demo')
+$targets = @('kiriyama_canvas')
 if ($DoTest) { $targets += 'kiriyama_text_tests' }
 
 $buildArgs = @('--build', $BuildDir, '--target') + $targets
@@ -223,7 +223,7 @@ if ($DoTest) {
     } else {
         Write-Host '==> 测试'
         # .data 是按当前工作目录找的，必须在产物目录里跑
-        Push-Location (Join-Path $BuildDir 'src\tests')
+        Push-Location (Join-Path $BuildDir 'platform\src\tests')
         try {
             & $node 'kiriyama_text_tests.js'
             if ($LASTEXITCODE -ne 0) { throw "测试失败（退出码 $LASTEXITCODE）。" }
@@ -236,7 +236,8 @@ if ($DoTest) {
 # ---------------------------------------------------------------- 汇报
 Write-Host ''
 Write-Host '==> 产物'
-foreach ($name in @('index.html', 'index.js', 'index.wasm', 'index.data')) {
+foreach ($name in @('index.html', 'kiriyama_canvas.js', 'kiriyama_canvas.wasm',
+                    'kiriyama_canvas.data', 'LICENSE')) {
     $path = Join-Path (Join-Path $Root 'web') $name
     if (Test-Path $path) {
         $kb = [math]::Round((Get-Item $path).Length / 1KB, 1)

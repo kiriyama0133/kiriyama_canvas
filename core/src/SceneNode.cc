@@ -66,6 +66,14 @@ void SceneNode::setText(std::string text) {
     markDirty();
 }
 
+void SceneNode::setClipRect(const RectD& rect) noexcept {
+    if (clipRect_ == rect) {
+        return;
+    }
+    clipRect_ = rect;
+    markDirty();
+}
+
 void SceneNode::setStyle(const SceneStyle& style) noexcept {
     if (style_ == style) {
         return;
@@ -214,6 +222,7 @@ std::unique_ptr<SceneNode> SceneNode::clone() const {
     copy->name_ = name_;
     copy->visible_ = visible_;
     copy->frame_ = frame_;
+    copy->clipRect_ = clipRect_;
     copy->points_ = points_;
     copy->text_ = text_;
     copy->style_ = style_;
@@ -284,6 +293,13 @@ Affine2D SceneNode::worldTransform() const noexcept {
 
 RectD SceneNode::worldBounds() const noexcept {
     return transformedBounds(worldTransform(), bounds());
+}
+
+RectD SceneNode::worldClipRect() const noexcept {
+    if (clipRect_.empty()) {
+        return {};
+    }
+    return transformedBounds(worldTransform(), clipRect_);
 }
 
 Vec2d SceneNode::toWorld(const Vec2d& localPoint) const noexcept {

@@ -7,8 +7,12 @@
             "includePath": [
                 "${workspaceFolder}/math/include",
                 "${workspaceFolder}/core/include",
-                "${workspaceFolder}/src",
-                "${workspaceFolder}/third_parts/SDL/include"
+                "${workspaceFolder}/platform/src/include",
+                "${workspaceFolder}/platform/web/include",
+                "${workspaceFolder}/third_parts/SDL/include",
+                "${workspaceFolder}/third_parts/SDL_ttf/include",
+                "${workspaceFolder}/third_parts/googletest/googletest/include",
+                "${workspaceFolder}/build/generated"
             ],
             "cStandard": "c17",
             "cppStandard": "c++23",

@@ -34,7 +34,8 @@ struct TooltipOptions {
     TooltipAlign align{TooltipAlign::Center};
 
     /// 锚点与卡片之间的间距。箭头就活在这段距离里（长度 = gap）。
-    double gap{8.0};
+    /// 默认不带箭头，所以间距压得比较紧。
+    double gap{6.0};
     /// 沿边方向的额外平移：上下侧为 +x，左右侧为 +y。
     double offset{0.0};
     /// 卡片与视口边缘的最小留白。
@@ -45,8 +46,9 @@ struct TooltipOptions {
     /// 翻面也放不下就夹进视口。
     bool clampToViewport{true};
 
-    /// 箭头底边宽度，0 = 不画箭头。
-    double arrowWidth{10.0};
+    /// 箭头底边宽度，0 = 不画箭头（默认）。要箭头给 8~12。
+    /// 气球下面那个倒三角很容易挡住图元、又是纯装饰，默认关掉。
+    double arrowWidth{0.0};
     /// 卡片圆角。箭头落点会避开圆角区域。
     double cornerRadius{6.0};
 

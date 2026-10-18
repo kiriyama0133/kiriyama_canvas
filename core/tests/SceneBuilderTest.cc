@@ -349,6 +349,63 @@ TEST(SceneBuilder, EmptyDatasetRendersEmptyState) {
     EXPECT_EQ(findByKey(*result.root, "series"), nullptr);
 }
 
+// ---------------------------------------------------------------- 主题 token
+
+TEST(SceneBuilder, SameTreeResolvesDifferentColorsPerTheme) {
+    const Dataset dataset = makeBarDataset();
+    const auto result = buildBarChart(dataset, {640.0, 400.0});
+    ASSERT_TRUE(result.valid);
+
+    // 同一棵树：背景 / 网格 / 系列色都是 token，换主题 = 换解析结果。
+    const SceneNode* background = findByKey(*result.root, "background");
+    const SceneNode* grid = findByKey(*result.root, "grid.y.0");
+    const SceneNode* bar = findByKey(*result.root, "bar.0.0");
+    ASSERT_NE(background, nullptr);
+    ASSERT_NE(grid, nullptr);
+    ASSERT_NE(bar, nullptr);
+
+    const ChartTheme light = ChartTheme::Light();
+    const ChartTheme dark = ChartTheme::Dark();
+
+    EXPECT_EQ(background->style().fill.token, ColorToken::Background);
+    EXPECT_EQ(background->style().fill.resolve(light), light.background);
+    EXPECT_EQ(background->style().fill.resolve(dark), dark.background);
+    EXPECT_NE(background->style().fill.resolve(light).a == 0,
+              background->style().fill.resolve(dark).a == 0);
+
+    EXPECT_EQ(grid->style().stroke.token, ColorToken::Grid);
+    EXPECT_EQ(grid->style().stroke.resolve(light), light.grid);
+    EXPECT_EQ(grid->style().stroke.resolve(dark), dark.grid);
+
+    EXPECT_EQ(bar->style().fill.token, ColorToken::Series);
+    EXPECT_EQ(bar->style().fill.resolve(light), light.seriesColor(0));
+    EXPECT_EQ(bar->style().fill.resolve(dark), dark.seriesColor(0));
+}
+
+TEST(SceneBuilder, ThemeSwitchRequiresNoReconciliation) {
+    // 树不依赖主题：同一数据 build 两次，对账零写入——切主题根本不用走 diff。
+    const Dataset dataset = makeLineDataset();
+
+    SceneBuildOptions options;
+    options.labelFontSize = 13.0;  // 度量是布局参数，与主题无关
+    const auto first = buildLineChart(dataset, {800.0, 450.0}, {}, options);
+    const auto second = buildLineChart(dataset, {800.0, 450.0}, {}, options);
+    ASSERT_TRUE(first.valid);
+    ASSERT_TRUE(second.valid);
+
+    SceneNode renderRoot(NodeType::Group, "chart");
+    (void)patchScene(renderRoot, first);
+    const std::size_t nodeCount = countNodes(renderRoot);
+
+    const auto diff = patchScene(renderRoot, second);
+    EXPECT_EQ(diff.stats.inserted, 0u);
+    EXPECT_EQ(diff.stats.removed, 0u);
+    EXPECT_EQ(diff.stats.moved, 0u);
+    EXPECT_EQ(diff.stats.updated, 0u);
+    EXPECT_TRUE(diff.changed.empty());
+    EXPECT_EQ(countNodes(renderRoot), nodeCount);
+}
+
 // ---------------------------------------------------------------- 双轴
 
 TEST(SceneBuilder, SecondarySeriesUsesRightAxis) {

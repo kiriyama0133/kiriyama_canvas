@@ -7,6 +7,7 @@ add_executable(kiriyama_core_tests
     SceneDiffTest.cc
     SceneBuilderTest.cc
     SceneTest.cc
+    SparkBarTest.cc
     TableTest.cc
     TableLayoutTest.cc
     TooltipTest.cc

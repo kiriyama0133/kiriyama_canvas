@@ -274,7 +274,13 @@ SceneStyle applyInteractionStyle(const SceneStyle& base,
     SceneStyle result = base;
 
     if (overlay.overlayFill.a > 0.0f) {
-        result.fill = blendOver(base.fill, overlay.overlayFill);
+        // 直接色：正常混色。token 色：core 不知道当前主题，混色无意义——
+        // overlay 是显式意图，直接覆盖成 overlay 的颜色。
+        if (base.fill.token == ColorToken::None) {
+            result.fill = blendOver(base.fill.color, overlay.overlayFill);
+        } else {
+            result.fill = overlay.overlayFill;
+        }
     }
 
     if (overlay.overlayStroke.a > 0.0f) {

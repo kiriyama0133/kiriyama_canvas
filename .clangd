@@ -1,3 +1,13 @@
+# compile_commands.json 在 build/ 里。clangd 默认只在源文件所在目录向上找，
+# 不会进子目录，所以这里显式指过去（配合 CMakeLists 的 EXPORT_COMPILE_COMMANDS）。
+# 换构建目录（比如 --clean 重配）不需要改这里，只要还是 build/。
+CompileFlags:
+  CompilationDatabase: build
+  # em++ 是 clang 的包装器。允许 clangd 询问它内置的 include 搜索路径
+  # （SDL / 标准库头），否则 wasm32 目标的系统头要找半天/报错。
+  # 路径按本机 emsdk 改；不要时删掉这行也能工作（只是系统头推断差一点）。
+  # Compiler: ["E:/emsdk/upstream/emscripten/em++.exe"]
+
 InlayHints:
   Enabled: Yes
   ParameterNames: Yes   # 函数调用时显示参数名

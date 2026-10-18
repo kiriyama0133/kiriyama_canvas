@@ -40,8 +40,11 @@ struct SceneDiffResult {
     std::vector<SceneNode*> changed;
 };
 
-/// 把 target 就地更新成 source 的样子，返回统计与变化节点。
+/// 把 target 就地更新成 source 的样子，返回统计与变化节点（保留 source，新子树会 clone）。
 [[nodiscard]] SceneDiffResult reconcileScene(SceneNode& target, const SceneNode& source);
+
+/// 消费型对账：直接接管 source 中的新子树与顶点缓冲，消除 clone 与二次拷贝。
+[[nodiscard]] SceneDiffResult reconcileScene(SceneNode& target, SceneNode&& source);
 
 /// 只比属性（图元数据 / 样式 / 变换 / 可见性），不比子节点和 key。
 [[nodiscard]] bool sameProperties(const SceneNode& lhs, const SceneNode& rhs) noexcept;

@@ -6,8 +6,11 @@
 // 维护多套样式结构，改一个字段的代价是固定的。
 
 #include <cstdint>
+#include <memory>
+#include <vector>
 
 #include "Color.h"
+#include "Theme.h"
 
 namespace kiriyama::core {
 
@@ -33,8 +36,11 @@ enum class CursorShape : std::uint8_t {
 };
 
 struct SceneStyle {
-    Color fill{};                ///< a == 0 视为无填充
-    Color stroke{};              ///< a == 0 或 strokeWidth <= 0 视为无描边
+    /// 语义 token 或直接色（见 Theme.h）。token != None 时渲染层用当前主题解析，
+    /// 所以切主题不需要重建场景树；直接色用于表格样式、组件自定义色这类
+    /// "调用方明确给了颜色"的场合。
+    Paint fill{};
+    Paint stroke{};
     double strokeWidth{0.0};
     double opacity{1.0};         ///< 作用于整棵子树
     double cornerRadius{0.0};    ///< 仅 Rect
@@ -42,8 +48,15 @@ struct SceneStyle {
     double lineHeight{0.0};      ///< 仅 Text，0 表示按 fontSize 推算
     TextAlign textAlign{TextAlign::Left};
     TextBaseline textBaseline{TextBaseline::Top};
+    /// 仅 Text：0 = 不限行数；1 = 单行，超宽按 ellipsis 截断（表格单元格用）。
+    int maxLines{0};
+    std::string ellipsis{"..."};
     /// 命中本节点时的光标。Inherit = 问父节点。
     CursorShape cursor{CursorShape::Inherit};
+    /// 局部系列色板覆盖：非空时，子树里 token == Series 的 Paint 用它解析
+    ///（沿树继承，最近祖先优先）。组件级自定义色板（如 PieChart::setPalette）
+    /// 挂在对账根组上；空 = 用全局主题的 series 色板。
+    std::shared_ptr<const std::vector<Color>> seriesPalette{};
 
     [[nodiscard]] constexpr bool hasFill() const noexcept { return fill.visible(); }
     [[nodiscard]] constexpr bool hasStroke() const noexcept {

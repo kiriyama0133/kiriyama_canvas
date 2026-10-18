@@ -8,6 +8,11 @@ project(kiriyama_canvas
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# clangd / IntelliSense 的编译数据库。每个文件在哪、带什么 -I / -std / 宏，
+# 编辑器直接读 build/compile_commands.json——关了它，clangd 就靠猜，
+# 新加的文件一律 "无法打开源文件 kiriyama/xxx.h"。
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 if(MSVC)
     add_compile_options(/utf-8)
 endif()
@@ -47,5 +52,7 @@ target_include_directories(kiriyama_fonts INTERFACE "${CMAKE_BINARY_DIR}/generat
 
 add_subdirectory(math)
 add_subdirectory(core)
-add_subdirectory(src)
+# platform/ 是平台层：src/ 是跨平台组件与渲染层，web/ 是 web 平台的
+# 统一 C API（c_api.cc）与宿主。以后 native/、android/ 等同级并列。
+add_subdirectory(platform)
 

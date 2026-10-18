@@ -70,9 +70,16 @@ public:
     [[nodiscard]] std::span<const Vec2d> points() const noexcept { return points_; }
     void setPoints(std::vector<Vec2d> points);
     void addPoint(const Vec2d& point);
+    [[nodiscard]] std::vector<Vec2d> takePoints() noexcept { return std::move(points_); }
 
     [[nodiscard]] const std::string& text() const noexcept { return text_; }
     void setText(std::string text);
+    [[nodiscard]] std::string takeText() noexcept { return std::move(text_); }
+
+    /// 子树裁剪矩形（**本节点局部坐标**）。empty = 不裁剪。
+    /// 描述树用它表达"滚动视口只露出一部分"这类语义，渲染层落成平台裁剪。
+    [[nodiscard]] const RectD& clipRect() const noexcept { return clipRect_; }
+    void setClipRect(const RectD& rect) noexcept;
 
     [[nodiscard]] const SceneStyle& style() const noexcept { return style_; }
     void setStyle(const SceneStyle& style) noexcept;
@@ -131,6 +138,9 @@ public:
 
     [[nodiscard]] Affine2D worldTransform() const noexcept;
 
+    /// clipRect 变换到世界坐标（四角取包围盒）。未设置裁剪时返回 empty。
+    [[nodiscard]] RectD worldClipRect() const noexcept;
+
     /// 世界坐标包围盒（含子树）。
     [[nodiscard]] RectD worldBounds() const noexcept;
 
@@ -163,6 +173,7 @@ private:
     bool dirty_{true};
 
     RectD frame_{};
+    RectD clipRect_{};
     std::vector<Vec2d> points_;
     std::string text_;
 

@@ -17,8 +17,10 @@ add_library(kiriyama_core STATIC
     src/SceneDiff.cc
     src/SceneNode.cc
     src/SceneQuery.cc
+    src/SparkBar.cc
     src/Table.cc
     src/TableLayout.cc
+    src/Theme.cc
     src/Tooltip.cc
     src/VirtualScroll.cc
 )

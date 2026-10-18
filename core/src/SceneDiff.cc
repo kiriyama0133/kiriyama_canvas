@@ -33,6 +33,7 @@ void copyProperties(SceneNode& target, const SceneNode& source) {
     target.setType(source.type());
     target.setVisible(source.visible());
     target.setFrame(source.frame());
+    target.setClipRect(source.clipRect());
     if (!samePoints(target.points(), source.points())) {
         target.setPoints(std::vector<Vec2d>(source.points().begin(), source.points().end()));
     }
@@ -186,6 +187,9 @@ bool sameProperties(const SceneNode& lhs, const SceneNode& rhs) noexcept {
         return false;
     }
     if (!(lhs.frame() == rhs.frame())) {
+        return false;
+    }
+    if (!(lhs.clipRect() == rhs.clipRect())) {
         return false;
     }
     if (!(lhs.style() == rhs.style())) {

@@ -36,38 +36,15 @@
 #include "Layout.h"
 #include "Scene.h"
 #include "SceneDiff.h"
+#include "Theme.h"
 
 namespace kiriyama::core {
 
 // ---------------------------------------------------------------- 主题
-
-/// 配色与字号。默认浅色，深色主题换一套色板即可，不改任何几何。
-struct ChartTheme {
-    Color background{Color::FromBytes(0xFF, 0xFF, 0xFF)};
-    Color plotBackground{Color::FromBytes(0xFA, 0xFA, 0xF8)};
-    Color grid{Color::FromBytes(0xE9, 0xE7, 0xE1)};
-    Color axisLine{Color::FromBytes(0xB4, 0xB2, 0xAA)};
-    Color label{Color::FromBytes(0x6E, 0x6E, 0x68)};
-    Color title{Color::FromBytes(0x2C, 0x2C, 0x2A)};
-    Color emptyText{Color::FromBytes(0xA8, 0xA6, 0x9E)};
-
-    double gridWidth{1.0};
-    double axisWidth{1.0};
-    double labelFontSize{12.0};
-    double titleFontSize{15.0};
-
-    /// 为空时用 defaultSeriesPalette()。
-    std::vector<Color> series{};
-
-    [[nodiscard]] static ChartTheme Light();
-    [[nodiscard]] static ChartTheme Dark();
-
-    /// 超过色板长度自动循环。
-    [[nodiscard]] Color seriesColor(std::size_t index) const;
-};
-
-/// 8 色分类色板（蓝 / 青 / 橙 / 紫 / 红 / 绿 / 灰蓝 / 玫红）。
-[[nodiscard]] const std::vector<Color>& defaultSeriesPalette();
+//
+// ChartTheme（纯颜色调色板）与 ColorToken / Paint 见 Theme.h。
+// 描述树只发 token，渲染层用当前主题解析——切深浅色不需要 rebuild。
+// 字号 / 线宽等度量是布局参数，在 SceneBuildOptions 里，不在 theme 里。
 
 // ---------------------------------------------------------------- 选项
 
@@ -83,7 +60,14 @@ enum class LineCurve : std::uint8_t {
 };
 
 struct SceneBuildOptions {
-    ChartTheme theme{ChartTheme::Light()};
+    /// 描述树的颜色一律语义 token（Theme.h），这里不再有 theme 颜色字段；
+    /// 主题在渲染层（当前是页面级状态）。
+
+    // ---- 文本 / 线宽度量（布局参数：影响文字排版盒与描边几何，所以在这里）
+    double labelFontSize{12.0};
+    double titleFontSize{15.0};
+    double gridWidth{1.0};
+    double axisWidth{1.0};
 
     /// 图表标题，空则不占位（会额外撑开顶部 padding）。
     std::string title{};
@@ -112,6 +96,7 @@ struct SceneBuildOptions {
     bool showGrid{true};
     /// 类目轴默认不画竖向网格线——每条都压在一组柱子上，只会显乱。
     bool showCategoryGrid{false};
+    bool showPlotBackground{true};
     bool showAxisLines{true};
     bool showAxisLabels{true};
     bool showAxisTitles{true};
@@ -124,12 +109,21 @@ struct SceneBuildOptions {
     bool showPieValues{true};
     /// 整圆细分数；扇区按弧长比例取用。
     int pieSegments{96};
-    /// 扇区之间的描边宽度（用背景色描边，形成分隔缝）。
+    /// 扇区之间的描边宽度（形成分隔缝）。
     double pieSliceGap{1.0};
+    /// 缝隙描边色；alpha == 0 时发 Token::Background（用背景色"擦"出缝，跟主题走）。
+    Color pieGapColor{};
+    /// 扇区标签文字色覆盖；alpha == 0 时发 Token::Label（跟随主题）。
+    /// 组件级自定义标签色（如 PieChart::setLabelStyle）从这里进。
+    Color pieLabelColorOverride{};
 
     // ---- 空状态
     bool showEmptyText{true};
     std::string emptyText{"No data"};
+
+    /// 描述树里文本定位（标签 / 刻度 / 标题）用的测量回调。
+    /// 为空时用 defaultTextMeasure 估算；宿主接真实字体度量可消除估宽误差。
+    TextMeasureFn textMeasure{};
 };
 
 // ---------------------------------------------------------------- 入口

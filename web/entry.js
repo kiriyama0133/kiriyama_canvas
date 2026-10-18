@@ -1,27 +1,23 @@
 // ---------------------------------------------------------------- entry.js
 //
-// 页面与 wasm 之间的唯一胶水层，table / pie 两个 demo 共用。
-// 构建时用 --post-js 拼进 table.js / pie.js，运行在 Module 的作用域里，
+// 页面与 wasm 之间的唯一胶水层，pie / sparkbar / table 三类组件共用一份。
+// 构建时用 --post-js 拼进 kiriyama_canvas.js，运行在 Module 的作用域里，
 // 因此这里能直接用 ccall 这类运行时方法，页面则完全不需要知道
 // 编码格式、字符串指针、导出符号名。
 //
-// 页面最省事的写法（连一行 JS 都不用写）：
+// 实例模型：一个 wasm 装组件类型，想画几个就创建几个实例，句柄就是身份。
 //
-//     <script>
-//       window.KIRIYAMA_TABLE_MODEL = { columns: [...], rows: [...] };
-//       // 或
-//       window.KIRIYAMA_PIE_MODEL = { slices: [{ label, value }, ...] };
-//     </script>
-//     <script src="table.js"></script>   // 或 pie.js
+//   var a = Module.createComponent('pie');
+//   var b = Module.createComponent('pie');          // 第二个饼图，互不干扰
+//   Module.loadPie(a, modelA);
+//   Module.loadPie(b, modelB);
+//   Module.showComponent(a, { x: 0,   y: 0, width: 470, height: 540 });
+//   Module.showComponent(b, { x: 490, y: 0, width: 470, height: 540 });
 //
-// 运行时换数据 / 多份数据：
+//   // 一步到位
+//   var c = Module.mount('sparkbar', { x: 0, y: 0, width: 960, height: 540 }, model);
 //
-//     Module.loadTable(model);          // 普通对象
-//     Module.loadTable(jsonText);       // JSON 字符串（fetch 回来不用 parse）
-//     Module.loadPie(model);
-//
-// 两个 loader 都注册在每个产物里，互不干扰：各自只认自己的 MODEL 全局，
-// 没挂就什么都不做。属性一律用 Module['x'] 访问：--closure=1 会重命名点号属性。
+// 属性一律用 Module['x'] 访问：--closure=1 会重命名点号属性。
 //
 // ⚠️ 同理，**页面传进来的模型对象**的属性也必须用 quoted 下标读
 // （model['columns']、model['slices']……）：--closure=1 会把 entry.js 里的
@@ -38,11 +34,83 @@
     Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: false });
   } catch (e) { /* 某些内嵌环境不允许覆盖，退回真实 DPR */ }
 
-  // 行协议，见 src/app/TableDemo.cc 的 parseModel：
-  //   Cidtitletypewidthsortableformat
-  //   Rkeycell…
+  // 行协议，见 c_api.cc 的 parseTableModel：
+  //   C␟id␟title␟type␟width␟sortable␟format     列定义
+  //   R␟key␟cell1␟cell2␟...                     一行
   // U+001F 在日常文本里不会出现，所以不需要转义。
   var UNIT = '\u001f';
+
+  function call(name, argTypes, args) {
+    return Module['ccall'](name, null, argTypes, args);
+  }
+
+  /// 句柄参数统一走这里：所有 kiriyama_<组件>_* 的第一个参数都是句柄。
+  function withHandle(handle, name, argTypes, args) {
+    return call(name, ['number'].concat(argTypes), [handle].concat(args));
+  }
+
+  // ================================================================ 实例
+
+  /// 组件类型表。字符串数组而不是对象字面量：--closure=1 会重命名对象字面量
+  /// 的无引号键，按字符串动态查表的老写法会查不到。
+  var COMPONENT_TYPES = ['pie', 'sparkbar', 'table'];
+
+  function componentKey(type) {
+    var key = String(type).toLowerCase();
+    if (COMPONENT_TYPES.indexOf(key) < 0) {
+      throw new Error('未知组件 "' + type + '"（pie / sparkbar / table）');
+    }
+    return key;
+  }
+
+  /// 创建一个实例，返回句柄（>= 1；失败为 0）。
+  Module['createComponent'] = function (type) {
+    return Module['ccall']('kiriyama_create_component', 'number', ['string'],
+                           [componentKey(type)]);
+  };
+
+  Module['destroyComponent'] = function (handle) {
+    call('kiriyama_destroy_component', ['number'], [handle | 0]);
+  };
+
+  /// 销毁全部实例（画布清空）。
+  Module['clearComponents'] = function () {
+    call('kiriyama_clear_components', [], []);
+  };
+
+  Module['componentCount'] = function () {
+    return Module['ccall']('kiriyama_component_count', 'number', [], []);
+  };
+
+  /// showComponent(handle, { x, y, width, height })：逻辑像素坐标。
+  /// 同一个句柄再调用就是改位置与大小。
+  Module['showComponent'] = function (handle, frame) {
+    if (!frame) {
+      throw new Error('showComponent: 需要 { x, y, width, height }');
+    }
+    withHandle(handle | 0, 'kiriyama_show_component',
+               ['number', 'number', 'number', 'number'],
+               [Number(frame['x'] || 0), Number(frame['y'] || 0),
+                Number(frame['width']), Number(frame['height'])]);
+  };
+
+  Module['hideComponent'] = function (handle) {
+    withHandle(handle | 0, 'kiriyama_hide_component', [], []);
+  };
+
+  Module['componentVisible'] = function (handle) {
+    return withHandle(handle | 0, 'kiriyama_component_visible', [], []) === 1;
+  };
+
+  // ================================================================ 主题
+
+  /// 页面级主题："light" / "dark"。描述树只发语义 token，颜色在渲染层
+  /// 按当前主题解析——切主题不重建任何实例 / 数据，下一帧直接生效。
+  Module['setTheme'] = function (name) {
+    ccall('kiriyama_set_theme', null, ['string'], [String(name || '')]);
+  };
+
+  // ================================================================ 表格
 
   function cellText(value) {
     return value === null || value === undefined ? '' : String(value);
@@ -79,37 +147,22 @@
     return lines.join('\n');
   }
 
-  /// 载入一份表格模型。model 可以是对象，也可以是 JSON 文本。
-  /// 只是登记，下一帧绘制时才替换场景树（不在 JS 调用栈上动 C++ 对象）。
-  Module['loadTable'] = function (model) {
+  /// loadTable(handle, model)：对象或 JSON 文本都行。
+  Module['loadTable'] = function (handle, model) {
     if (typeof model === 'string') {
       model = JSON.parse(model);
     }
     if (!model || !model['columns']) {
       throw new Error('loadTable: 缺少 model.columns');
     }
-    Module['ccall']('kiriyama_table_load', null, ['string'], [encodeTable(model)]);
+    withHandle(handle | 0, 'kiriyama_table_load', ['string'], [encodeTable(model)]);
     return true;
   };
 
-  // ---------------------------------------------------------------- 饼图
-  // 数据：label␟value 每行一片（src/app/PieDemo.cc 的 parseModel）。
-  // 样式：options 对象在这里逐项翻译成 kiriyama_pie_set_* 导出函数——
-  // 前端交付的是 JS，样式映射不塞进 C++。颜色 '#RRGGBB' 解析成 0xRRGGBB，
-  // 'none' 传 -1（C++ 侧负值 = 全透明）。
-  function encodePie(model) {
-    var slices = model['slices'] || [];
-    var lines = [];
-    for (var i = 0; i < slices.length; i++) {
-      var slice = slices[i];
-      var label = slice['label'] == null ? '' : String(slice['label']);
-      var value = slice['value'] == null ? '' : String(slice['value']);
-      lines.push(label + UNIT + value);
-    }
-    return lines.join('\n');
-  }
+  // ================================================================ 饼图
 
-  function pieColor(value) {
+  /// 颜色：'#RRGGBB' → 0xRRGGBB，'none' / 缺失 → -1（C 侧负值 = 全透明）。
+  function colorValue(value) {
     if (value === 'none' || value === 'transparent' || value == null) {
       return -1;
     }
@@ -121,44 +174,190 @@
     return isNaN(rgb) ? -1 : rgb;
   }
 
-  var PIE_OPTION_SETTERS = {
-    labelFontSize: function (v) { Module['ccall']('kiriyama_pie_set_label_font_size', null, ['number'], [Number(v)]); },
-    labelColor:    function (v) { Module['ccall']('kiriyama_pie_set_label_color', null, ['number'], [pieColor(v)]); },
-    showLabels:    function (v) { Module['ccall']('kiriyama_pie_set_show_labels', null, ['number'], [v ? 1 : 0]); },
-    showValues:    function (v) { Module['ccall']('kiriyama_pie_set_show_values', null, ['number'], [v ? 1 : 0]); },
-    gapWidth:      function (v) { Module['ccall']('kiriyama_pie_set_gap_width', null, ['number'], [Number(v)]); },
-    gapColor:      function (v) { Module['ccall']('kiriyama_pie_set_gap_color', null, ['number'], [pieColor(v)]); },
-    explode:       function (v) { Module['ccall']('kiriyama_pie_set_explode', null, ['number'], [Number(v)]); },
-    innerRadius:   function (v) { Module['ccall']('kiriyama_pie_set_inner_radius', null, ['number'], [Number(v)]); },
-    startAngle:    function (v) { Module['ccall']('kiriyama_pie_set_start_angle', null, ['number'], [Number(v)]); },
-    labelOffset:   function (v) { Module['ccall']('kiriyama_pie_set_label_offset', null, ['number'], [Number(v)]); }
-  };
+  /// 气泡贴哪一侧：字符串 above/below/left/right（也接受数字）。
+  function tooltipSideIndex(value) {
+    if (typeof value === 'number') {
+      return value;
+    }
+    var text = String(value).toLowerCase();
+    if (text === 'below' || text === 'bottom') { return 1; }
+    if (text === 'left') { return 2; }
+    if (text === 'right') { return 3; }
+    return 0;  // above / top / 未知
+  }
 
-  function applyPieOptions(options) {
+  /// 每个 setter 都是 (handle, value)：样式跟着实例走，不是全局。
+  ///
+  /// ⚠️ 用 [name, fn] 数组而不是对象字面量：--closure=1 会重命名对象字面量里
+  /// 未加引号的键（pie → Si 这种），而查表的 key 来自页面（不经过 closure，
+  /// 保持原文），按名查表会查不到——结果是 options 被静默丢弃，图照样画出来，
+  /// 只是样式全没生效，极难发现。字符串字面量不会被重命名，所以存成数组。
+  var PIE_OPTION_SETTERS = [
+    ['labelFontSize', function (h, v) { withHandle(h, 'kiriyama_pie_set_label_font_size', ['number'], [Number(v)]); }],
+    ['labelColor',    function (h, v) { withHandle(h, 'kiriyama_pie_set_label_color', ['number'], [colorValue(v)]); }],
+    ['showLabels',    function (h, v) { withHandle(h, 'kiriyama_pie_set_show_labels', ['number'], [v ? 1 : 0]); }],
+    ['showValues',    function (h, v) { withHandle(h, 'kiriyama_pie_set_show_values', ['number'], [v ? 1 : 0]); }],
+    ['gapWidth',      function (h, v) { withHandle(h, 'kiriyama_pie_set_gap_width', ['number'], [Number(v)]); }],
+    ['gapColor',      function (h, v) { withHandle(h, 'kiriyama_pie_set_gap_color', ['number'], [colorValue(v)]); }],
+    ['explode',       function (h, v) { withHandle(h, 'kiriyama_pie_set_explode', ['number'], [Number(v)]); }],
+    ['innerRadius',   function (h, v) { withHandle(h, 'kiriyama_pie_set_inner_radius', ['number'], [Number(v)]); }],
+    ['startAngle',    function (h, v) { withHandle(h, 'kiriyama_pie_set_start_angle', ['number'], [Number(v)]); }],
+    ['labelOffset',   function (h, v) { withHandle(h, 'kiriyama_pie_set_label_offset', ['number'], [Number(v)]); }],
+    // 气泡：箭头宽度（0 = 不画那个倒三角，默认 0）、字号（正文自动小 1px）
+    ['tooltipArrowWidth', function (h, v) { withHandle(h, 'kiriyama_tooltip_set_arrow_width', ['number'], [Number(v)]); }],
+    ['tooltipFontSize',   function (h, v) { withHandle(h, 'kiriyama_tooltip_set_font_size', ['number'], [Number(v)]); }],
+    // 贴哪一侧：'above'（默认，浮在图上方）/ 'below' / 'left' / 'right'
+    ['tooltipSide',       function (h, v) { withHandle(h, 'kiriyama_tooltip_set_side', ['number'], [tooltipSideIndex(v)]); }],
+    // 跟随鼠标（默认 true）：气泡像浮层一样跟着光标走
+    ['tooltipFollowPointer', function (h, v) { withHandle(h, 'kiriyama_tooltip_set_follow_pointer', ['number'], [v ? 1 : 0]); }]
+  ];
+
+  /// 按 name 线性查表（表就十几项，比踩 closure 重命名的坑划算）。
+  function applyOptions(handle, options, table) {
     if (!options || typeof options !== 'object') {
       return;
     }
     for (var key in options) {
-      if (Object.prototype.hasOwnProperty.call(options, key) && PIE_OPTION_SETTERS[key]) {
-        PIE_OPTION_SETTERS[key](options[key]);
+      if (!Object.prototype.hasOwnProperty.call(options, key)) {
+        continue;
+      }
+      for (var i = 0; i < table.length; i++) {
+        if (table[i][0] === key) {
+          table[i][1](handle, options[key]);
+          break;
+        }
       }
     }
   }
 
-  Module['loadPie'] = function (model) {
+  /// loadPie(handle, model)
+  Module['loadPie'] = function (handle, model) {
     if (typeof model === 'string') {
       model = JSON.parse(model);
     }
     if (!model || !model['slices']) {
       throw new Error('loadPie: 缺少 model.slices');
     }
-    applyPieOptions(model['options']);
-    Module['ccall']('kiriyama_pie_load', null, ['string'], [encodePie(model)]);
+    var h = handle | 0;
+    applyOptions(h, model['options'], PIE_OPTION_SETTERS);
+
+    var slices = model['slices'];
+    withHandle(h, 'kiriyama_pie_begin_slices', [], []);
+    for (var i = 0; i < slices.length; i++) {
+      var slice = slices[i];
+      var label = slice['label'] == null ? '' : String(slice['label']);
+      var value = Number(slice['value']);
+      withHandle(h, 'kiriyama_pie_add_slice', ['string', 'number'],
+                 [label, isNaN(value) ? NaN : value]);
+    }
+    withHandle(h, 'kiriyama_pie_commit', [], []);
     return true;
   };
 
-  // 允许页面只声明数据：加载完自动送进去（table / pie 各自认领，互不影响）。
-  // 包一层而不是覆盖，shell 里的 onRuntimeInitialized 还要收 loading 遮罩。
+  /// 当前 hover 的扇区下标（-1 = 没有）。legend 联动之类用。
+  Module['pieHovered'] = function (handle) {
+    return withHandle(handle | 0, 'kiriyama_pie_hovered', [], []);
+  };
+
+  /// 可用扇区数（0 / 负 / NaN 片不算）。
+  Module['pieSliceCount'] = function (handle) {
+    return withHandle(handle | 0, 'kiriyama_pie_slice_count', [], []);
+  };
+
+  // ================================================================ SparkStackBar
+
+  var SPARK_OPTION_SETTERS = [
+    ['barWidth',     function (h, v) { withHandle(h, 'kiriyama_sparkbar_set_bar_width', ['number'], [Number(v)]); }],
+    ['barGap',       function (h, v) { withHandle(h, 'kiriyama_sparkbar_set_bar_gap', ['number'], [Number(v)]); }],
+    ['segmentGap',   function (h, v) { withHandle(h, 'kiriyama_sparkbar_set_segment_gap', ['number'], [Number(v)]); }],
+    ['cornerRadius', function (h, v) { withHandle(h, 'kiriyama_sparkbar_set_corner_radius', ['number'], [Number(v)]); }],
+    // hover 描边：颜色取该段自己的颜色，圆角沿用 cornerRadius；0 = 关闭
+    ['hoverBorderWidth', function (h, v) { withHandle(h, 'kiriyama_sparkbar_set_hover_border_width', ['number'], [Number(v)]); }],
+    ['showTags',     function (h, v) { withHandle(h, 'kiriyama_sparkbar_set_show_tags', ['number'], [v ? 1 : 0]); }],
+    ['tagFontSize',  function (h, v) { withHandle(h, 'kiriyama_sparkbar_set_tag_font_size', ['number'], [Number(v)]); }],
+    ['tagColor',     function (h, v) { withHandle(h, 'kiriyama_sparkbar_set_tag_color', ['number'], [colorValue(v)]); }],
+    ['heightRatio',  function (h, v) { withHandle(h, 'kiriyama_sparkbar_set_height_ratio', ['number'], [Number(v)]); }],
+    // 气泡与饼图共用同一套（每个实例一份）
+    ['tooltipArrowWidth', function (h, v) { withHandle(h, 'kiriyama_tooltip_set_arrow_width', ['number'], [Number(v)]); }],
+    ['tooltipFontSize',   function (h, v) { withHandle(h, 'kiriyama_tooltip_set_font_size', ['number'], [Number(v)]); }],
+    ['tooltipSide',       function (h, v) { withHandle(h, 'kiriyama_tooltip_set_side', ['number'], [tooltipSideIndex(v)]); }],
+    ['tooltipFollowPointer', function (h, v) { withHandle(h, 'kiriyama_tooltip_set_follow_pointer', ['number'], [v ? 1 : 0]); }]
+  ];
+
+  /// loadSparkBar(handle, model)
+  Module['loadSparkBar'] = function (handle, model) {
+    if (typeof model === 'string') {
+      model = JSON.parse(model);
+    }
+    if (!model || !model['series'] || !model['rows']) {
+      throw new Error('loadSparkBar: 缺少 model.series / model.rows');
+    }
+
+    var h = handle | 0;
+    applyOptions(h, model['options'], SPARK_OPTION_SETTERS);
+
+    var series = model['series'];
+    var rows = model['rows'];
+    withHandle(h, 'kiriyama_sparkbar_begin', [], []);
+    for (var s = 0; s < series.length; s++) {
+      var item = series[s];
+      var name = item['name'] == null ? '' : String(item['name']);
+      withHandle(h, 'kiriyama_sparkbar_add_series', ['string', 'number'],
+                 [name, colorValue(item['color'])]);
+    }
+    for (var r = 0; r < rows.length; r++) {
+      var row = rows[r];
+      withHandle(h, 'kiriyama_sparkbar_begin_row', ['string'],
+                 [row['tag'] == null ? '' : String(row['tag'])]);
+      var values = row['values'] || [];
+      for (var v = 0; v < values.length; v++) {
+        var value = Number(values[v]);
+        withHandle(h, 'kiriyama_sparkbar_add_value', ['number'], [isNaN(value) ? NaN : value]);
+      }
+      withHandle(h, 'kiriyama_sparkbar_end_row', [], []);
+    }
+    withHandle(h, 'kiriyama_sparkbar_commit', [], []);
+    return true;
+  };
+
+  // ================================================================ 一步挂载
+  // mount(type, frame, model) = create + show + load。返回句柄，之后可以
+  // showComponent 挪位置、load* 换数据、destroyComponent 摘掉。
+  // 同样是 [name, fn] 数组（理由见 PIE_OPTION_SETTERS）：key 来自页面，
+  // 对象字面量的键会被 closure 重命名，查不到。
+  var LOADERS = [
+    ['pie', function (h, model) { Module['loadPie'](h, model); }],
+    ['sparkbar', function (h, model) { Module['loadSparkBar'](h, model); }],
+    ['table', function (h, model) { Module['loadTable'](h, model); }]
+  ];
+
+  function loadInto(handle, key, model) {
+    for (var i = 0; i < LOADERS.length; i++) {
+      if (LOADERS[i][0] === key) {
+        LOADERS[i][1](handle, model);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Module['mount'] = function (type, frame, model) {
+    var key = componentKey(type);
+    var handle = Module['createComponent'](key);
+    if (handle === 0) {
+      throw new Error('mount: 创建 "' + key + '" 实例失败');
+    }
+    if (frame) {
+      Module['showComponent'](handle, frame);
+    }
+    if (model) {
+      loadInto(handle, key, model);
+    }
+    return handle;
+  };
+
+  // 允许页面只声明数据：加载完自动送进去（三份各自认领，互不影响）。
+  // 包一层而不是覆盖，页面里的 onRuntimeInitialized 还要收 loading 遮罩。
   var shellInit = Module['onRuntimeInitialized'];
   Module['onRuntimeInitialized'] = function () {
     if (shellInit) {
@@ -166,10 +365,16 @@
     }
     // globalThis['x'] 而不是裸变量：closure 会重命名裸标识符。
     if (typeof globalThis['KIRIYAMA_TABLE_MODEL'] !== 'undefined') {
-      Module['loadTable'](globalThis['KIRIYAMA_TABLE_MODEL']);
+      Module['mount']('table', { x: 0, y: 0, width: 960, height: 540 },
+                      globalThis['KIRIYAMA_TABLE_MODEL']);
     }
     if (typeof globalThis['KIRIYAMA_PIE_MODEL'] !== 'undefined') {
-      Module['loadPie'](globalThis['KIRIYAMA_PIE_MODEL']);
+      Module['mount']('pie', { x: 0, y: 0, width: 960, height: 540 },
+                      globalThis['KIRIYAMA_PIE_MODEL']);
+    }
+    if (typeof globalThis['KIRIYAMA_SPARKBAR_MODEL'] !== 'undefined') {
+      Module['mount']('sparkbar', { x: 0, y: 0, width: 960, height: 540 },
+                      globalThis['KIRIYAMA_SPARKBAR_MODEL']);
     }
   };
 })();

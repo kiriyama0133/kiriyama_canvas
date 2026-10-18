@@ -277,10 +277,10 @@ TEST(InteractionStyle, BlendsOverlayOntoFill) {
     overlay.overlayFill = Color::Rgba(0.0, 0.0, 1.0, 0.5);
 
     const SceneStyle result = applyInteractionStyle(base, overlay);
-    EXPECT_NEAR(result.fill.r, 0.5, 1e-6);
-    EXPECT_NEAR(result.fill.g, 0.0, 1e-6);
-    EXPECT_NEAR(result.fill.b, 0.5, 1e-6);
-    EXPECT_NEAR(result.fill.a, 1.0, 1e-6);
+    EXPECT_NEAR(result.fill.color.r, 0.5, 1e-6);
+    EXPECT_NEAR(result.fill.color.g, 0.0, 1e-6);
+    EXPECT_NEAR(result.fill.color.b, 0.5, 1e-6);
+    EXPECT_NEAR(result.fill.color.a, 1.0, 1e-6);
 }
 
 TEST(InteractionStyle, OverlayFillOnTransparentNodeStaysVisible) {
@@ -289,8 +289,22 @@ TEST(InteractionStyle, OverlayFillOnTransparentNodeStaysVisible) {
     overlay.overlayFill = Color::Rgba(0.0, 1.0, 0.0, 0.4);
 
     const SceneStyle result = applyInteractionStyle(base, overlay);
-    EXPECT_NEAR(result.fill.g, 1.0, 1e-6);
-    EXPECT_NEAR(result.fill.a, 0.4, 1e-6);
+    EXPECT_NEAR(result.fill.color.g, 1.0, 1e-6);
+    EXPECT_NEAR(result.fill.color.a, 0.4, 1e-6);
+}
+
+TEST(InteractionStyle, OverlayOverridesTokenFillExplicitly) {
+    // token 色（如 Token::Series）在 core 无法混色（不知道当前主题）——
+    // overlay 是显式意图，直接覆盖成 overlay 的颜色。
+    SceneStyle base;
+    base.fill = Paint::series(2);
+    InteractionStyle overlay;
+    overlay.overlayFill = Color::Rgba(1.0, 1.0, 0.0, 0.6);
+
+    const SceneStyle result = applyInteractionStyle(base, overlay);
+    EXPECT_EQ(result.fill.token, ColorToken::None);
+    EXPECT_NEAR(result.fill.color.r, 1.0, 1e-6);
+    EXPECT_NEAR(result.fill.color.a, 0.6, 1e-6);
 }
 
 TEST(InteractionStyle, AddsStrokeWidthAndMultipliesOpacity) {

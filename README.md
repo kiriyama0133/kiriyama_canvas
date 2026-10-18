@@ -82,12 +82,18 @@ cmake --build build
 
 ### 2.5 产物与预览
 
+**只有一个 wasm**：pie / SparkStackBar / Table 装在同一份产物里，页面用 tab 或
+`?component=` 决定挂哪个组件，不重新加载。
+
 ```
-web/index.html     外壳页面（web/shell.html 生成的）
-web/index.js       JS 胶水（closure 压缩后约 85 KB）
-web/index.wasm     约 1.6 MB（Release）/ 11.6 MB（Debug）
-web/index.data     字体，体积随打包字体数量变化
+web/index.html            页面（源页即交付页，自己 <script src="kiriyama_canvas.js">）
+web/kiriyama_canvas.js    JS 胶水 + entry.js（closure 压缩后约 88 KB）
+web/kiriyama_canvas.wasm  约 1.6 MB（Release）/ 11.6 MB（Debug）
+web/kiriyama_canvas.data  字体，体积随打包字体数量变化
+web/LICENSE               构建时从仓库根复制过来（发布目录自带许可证）
 ```
+
+新增构建选项：`-DKIRIYAMA_BUILD_WEB=OFF` 只编组件与测试（纯 C++ 侧开发，不出 wasm）。
 
 **体积的大头是构建类型，不是代码量。** 同一份代码：
 
@@ -118,7 +124,7 @@ python -m http.server 8765 --bind 127.0.0.1 --directory web
 | ------ | --- | ------------------------------------------------------------------------------------------------------------------------ |
 | `math` | 49  | `ninja -C build kiriyama_math_tests`，然后在 `build/math/tests` 里 `node kiriyama_math_tests.js`                              |
 | `core` | 260 | `ninja -C build kiriyama_core_tests`，然后在 `build/core/tests` 里 `node kiriyama_core_tests.js`                              |
-| `src`  | 120 | `./scripts/build.sh --test`，或 `ninja -C build kiriyama_text_tests` + 在 `build/src/tests` 里 `node kiriyama_text_tests.js` |
+| `src`  | 120 | `./scripts/build.sh --test`，或 `ninja -C build kiriyama_text_tests` + 在 `build/platform/src/tests` 里 `node kiriyama_text_tests.js` |
 
 必须**在产物所在目录**运行：`.data` 是按当前工作目录找的。
 
@@ -127,14 +133,22 @@ python -m http.server 8765 --bind 127.0.0.1 --directory web
 ## 4. 分层
 
 ```
-math/   纯数学：向量、矩阵、插值、缓动曲线、弹簧、刻度。无状态、可 constexpr
-core/   场景树、几何、命中测试、布局、Tooltip 状态机、表格排序状态机。不依赖 SDL，可在 node 里测
-src/    scene/  交互基类 Widget、会弹气泡的 TooltipTarget、动画、拖拽（只依赖 core，仍可在 node 里测）
-        render/ SDL 后端：App 主循环、Painter、文字渲染、Tooltip 绘制、光标
-        app/    示例程序
+math/           纯数学：向量、矩阵、插值、缓动曲线、弹簧、刻度。无状态、可 constexpr
+core/           场景树、几何、命中测试、布局、Tooltip 状态机、表格排序状态机。
+                不依赖 SDL，可在 node 里测
+platform/       平台层（每个平台一个子目录，共用下面的组件）
+  src/          scene/  交互基类 Widget、TooltipTarget、动画、拖拽（只依赖 core，可在 node 里测）
+                render/ SDL 后端：App 主循环、Painter、文字渲染、Tooltip、光标、TableWidget
+                tests/  组件层测试（node 里跑）
+                —— 没有 app/：demo 宿主归平台，见下
+  web/          统一 C API（c_api.h / c_api.cc）+ 唯一宿主（CanvasHost.cc）
 ```
 
-一句话：**core 里不许出现 SDL，src/render 里不许出现业务分支**。
+一句话：**core 里不许出现 SDL，render 里不许出现业务分支，平台差异只进 platform/<平台>**。
+
+**C API 约定**：所有组件的 C 接口都写在 `platform/web/include/kiriyama/web/c_api.h`，
+实现全在 `platform/web/c_api.cc`（一个文件，不按组件拆）。命名 `kiriyama_<组件>_<动作>`；
+数据走批量提交（begin/add/commit），样式走 setter，宿主每帧 `pump*()` 消费。
 
 已确立的范式是 **值类型模型 + 有状态控制器 + 无状态渲染器**：  
 `TableData` 配 `TableState`，`Dataset` 配 `SceneBuilder`，再加上 `VirtualScroll` /  
@@ -579,47 +593,157 @@ window.KIRIYAMA_PIE_MODEL = {
 };
 ```
 
-Demo（`PieHost`）只负责"收数据 → 每帧 tick/draw/气泡"；**options 的映射在 `entry.js` 里**——
-前端交付的是 JS，每个键直接调用 wasm 导出的 `kiriyama_pie_set_*`（颜色 `'#RRGGBB'`
-在 JS 侧解析成 0xRRGGBB，`'none'` 传 -1 表示透明），C++ 侧不解析任何样式协议。
+宿主（`platform/web/CanvasHost.cc`）只负责"收数据 → 每帧 tick/draw/气泡"；**options 的映射
+在 `entry.js` 里**——前端交付的是 JS，每个键直接调用 wasm 导出的 `kiriyama_pie_set_*`
+（颜色 `'#RRGGBB'` 在 JS 侧解析成 0xRRGGBB，`'none'` 传 -1 表示透明），C++ 侧不解析任何
+样式协议。
+
+### 5.11.1 C API（`platform/web/include/kiriyama/web/c_api.h`）
+
+C API 是**实例模型**：先 `create_component` 拿句柄，之后所有数据 / 样式 / 挂载 / 查询
+都以句柄为第一个参数。两个饼图就是两个句柄，各存各的数据与样式，互不影响。
+
+```c
+int a = kiriyama_create_component("pie");
+int b = kiriyama_create_component("pie");
+
+// 数据：批量提交，一次重建（每个函数第一个参数都是句柄）
+kiriyama_pie_begin_slices(a);
+kiriyama_pie_add_slice(a, "Technology", 38.6);
+kiriyama_pie_add_slice(a, "Consumer", 21.4);
+kiriyama_pie_commit(a);
+
+// 便捷入口：行协议 label␟value 每行一片
+kiriyama_pie_load(a, "Technology\x1f" "38.6\nConsumer\x1f21.4");
+kiriyama_pie_load(b, "Equity\x1f52\nBonds\x1f27.5");
+
+// 样式（0xRRGGBB；负值 = 透明）
+kiriyama_pie_set_label_font_size(a, 14.0);
+kiriyama_pie_set_label_color(a, 0x3A3A38);
+kiriyama_pie_set_explode(a, 8.0);
+kiriyama_pie_set_inner_radius(b, 0.5);   // b 是甜甜圈，a 不是
+
+// 挂载：把实例放到画布上哪块矩形；不可见时既不绘制也不 tick
+kiriyama_show_component(a,   0, 0, 470, 540);
+kiriyama_show_component(b, 490, 0, 470, 540);
+
+// 查询
+int na = kiriyama_pie_slice_count(a);
+int ha = kiriyama_pie_hovered(a);       // -1 = 没有
+```
+
+约定：只能在宿主线程（渲染线程）调用；所有函数只登记状态、不动场景树，
+由宿主每帧 `kiriyama::web::pumpPie(handle, chart, renderer)` 统一消费——JS 回调里重入渲染不会炸。
+以后 line / bar / table 的接口都加在同一个 `c_api.h`，实现加在同一个 `c_api.cc`。
+
+⚠️ 实现细节：`kiriyama_pie_*` 的定义必须放在**全局作用域**并带 `EMSCRIPTEN_KEEPALIVE`。
+放进 namespace 会和头文件的 `extern "C"` 声明变成两个实体，符号被 C++ 修饰，
+wasm 导出表里查不到，`ccall` 报 `a is not a function`。
+
+⚠️ 以前数据放在文件级单例（`gData` / `gSparkData` / `gTableData`），看似"全局"，
+其实是 bug：一个进程每种图只能有一份。现在状态跟着句柄走。
 
 ### 5.12 从页面 JS 侧驱动：`web/entry.js`
 
-**交付页就是 `web/pie_shell.html` 自己**（pie 不用 emscripten 的 shell-file 模板，构建  
-只产 `pie.js` / `pie.wasm` / `pie.data`），页面里 `<script src="pie.js">` 引产物、  
-`<script>` 里写 model + options——Live Server / 任意静态服务直接打开就能跑。  
-胶水层是 `web/entry.js`（table / pie 两个 demo 共用一份），构建时用 `--post-js` 拼进  
-`table.js` / `pie.js`，跑在 `Module` 作用域内——所以页面**看不到** `ccall`、  
+**交付页就是 `web/index.html` 自己**（不用 emscripten 的 shell-file 模板，构建
+只产 `kiriyama_canvas.js` / `.wasm` / `.data`），页面里 `<script src="kiriyama_canvas.js">`
+引产物、`<script>` 里写 model + options——任意静态服务直接打开就能跑。
+胶水层是 `web/entry.js`（pie / sparkbar / table 三个组件共用一份），构建时用 `--post-js`
+拼进 `kiriyama_canvas.js`，跑在 `Module` 作用域内——所以页面**看不到** `ccall`、
 看不到分隔符协议、看不到字符串指针。
 
-页面的全部职责就是挂一份数据：
-
-```html
-<script>
-  window.KIRIYAMA_TABLE_MODEL = {
-    columns: [
-      { id: 'code', title: 'CODE', type: 'text' },
-      { id: 'last', title: 'LAST', type: 'number', format: '%.2f' },
-      { id: 'chg',  title: 'CHG',  type: 'number', format: '%+.2f%%' }
-    ],
-    rows: [{ key: 'AAPL', cells: ['AAPL', 227.52, 1.24] }]
-  };
-</script>
-<script src="table.js"></script>
-```
-
-运行时换数据（换一份 / 多份 / `fetch` 回来的 JSON 文本都行）：
+组件不是"演示页"：页面先 `Module.createComponent('pie')` 拿句柄，再用
+`Module.loadPie(handle, model)` 给数据、`Module.showComponent(handle, frame)`
+决定它挂在哪里。两个饼图就是两个句柄，各存各的。
 
 ```js
-Module.loadTable(model);       // 普通对象
-Module.loadTable(jsonText);    // JSON 字符串，不用自己 parse
-Module.loadPie(model);         // 饼图：{ slices: [{ label, value }, ...] }
+var a = Module.createComponent('pie');
+var b = Module.createComponent('pie');
+Module.loadPie(a, PIE_MODEL_A);
+Module.loadPie(b, PIE_MODEL_B);
+Module.showComponent(a, { x: 0,   y: 0, width: 470, height: 540 });
+Module.showComponent(b, { x: 490, y: 0, width: 470, height: 540 });
 ```
 
-`entry.js` 只导出公开方法 `Module.loadTable()` / `Module.loadPie()`，其余（编码、  
-`ccall`、加载时机）都在里面。两个 loader 都注册在每个产物里，各自只认自己的  
-`KIRIYAMA_*_MODEL` 全局，没挂就什么都不做。属性名统一用 `Module['x']` 访问，  
-因为 `--closure=1` 会重命名点号属性。
+也可以一步到位：
+
+```js
+var h = Module.mount('sparkbar', { x: 0, y: 0, width: 960, height: 540 }, SPARKBAR_MODEL);
+// 之后还能换数据 / 挪位置 / 销毁：Module.loadSparkBar(h, newModel)
+```
+
+运行时换数据（普通对象、JSON 字符串、`fetch` 回来的内容都行）：
+
+```js
+Module.loadPie(handle, model);
+Module.loadSparkBar(handle, jsonText);  // entry.js 会自己 JSON.parse
+Module.loadTable(handle, model);
+```
+
+`entry.js` 只导出公开方法，其余（编码、`ccall`、加载时机）都在里面。
+属性名统一用 `Module['x']` 访问；**选项映射表用字符串数组 `[name, fn]`**
+而不是对象字面量——`--closure=1` 会重命名对象字面量的无引号键，
+查表时如果 key 来自页面（不经过 closure），会查不到，结果是 options 被静默丢弃、
+样式全不生效。
+
+### 5.13 SparkStackBar
+
+一条由若干段堆叠成的微型柱，一排并列——KPI 卡片、表格内嵌趋势用它。
+
+- **数据模型在 core**：`core::SparkBarData`（series / tags / values[tag][series]），
+  NaN 与负值段按缺失跳过；布局是纯函数 `core::computeSparkBarLayout()`（有单元测试）。
+- **组件**：`scene::SparkBar`（数据指针 + version + options + 布局缓存；
+  继承 `scene::TooltipTarget`，命中按逐柱矩形判定）；**渲染**：`render::SparkBarRenderer`。
+  **坐标约定**：`computeSparkBarLayout()` 给的是以柱图左上角为原点的纯几何，
+  组件 `rebuild()` 时整体平移到节点本地坐标——渲染和 `hitShape()` 看到的是同一套坐标。
+  曾经只有渲染层加 `frame().origin()`、命中没加，命中区整体上移 `frame.y`，
+  柱子下半截点不到（这类"一半能点一半不能点"的怪状优先查这个）。
+- **hover 效果**：命中段的**自身颜色**描边（`hoverBorderWidth`，默认 2；颜色取该段色
+  加深 12%），圆角与柱一致，且是**外描边**（路径外扩半个线宽，整条线落在段外侧）。
+  同色居中描边只外长 1px，在浅底上等于没画。
+- **tooltip**：默认**跟随鼠标**（浮层盖在图表之上，气泡在光标右侧）；悬停某一段 →
+  `tag · 层名` + 值 + 占整柱比例，悬停柱身/标签 → 整柱汇总（各层值 + 合计）。
+  `TooltipHost::setFollowPointer(false)`（页面 `options.tooltipFollowPointer: false`）
+  则回到锚点模式——图表组件锚在整块图表 frame 上、浮在图上方。
+  贴哪一侧用通用 C API `kiriyama_tooltip_set_side(handle, ...)`（页面 `options.tooltipSide`）。
+- **页面**：`web/index.html`（交付页），C API 前缀 `kiriyama_sparkbar_*`，
+  entry.js 入口 `Module.loadSparkBar(handle, { series, rows, options })`。
+
+```js
+window.KIRIYAMA_SPARKBAR_MODEL = {
+  series: [                       // 顺序 = 堆叠顺序（自下而上）
+    { name: 'Revenue', color: '#3E6DB5' },
+    { name: 'Cost',    color: '#E0A050' }
+  ],
+  rows: [{ tag: '2024', values: [19.0, 7.0] }],
+  options: { barGap: 18, segmentGap: 2, cornerRadius: 4, hoverBorderWidth: 2,
+             tagFontSize: 12, tagColor: '#6E6E68', showTags: true,
+             barWidth: 0, heightRatio: 1 }
+};
+```
+
+数据组装走 C API：`begin → add_series×N → begin_row/add_value×M → commit`，
+宿主每帧 `kiriyama::web::pumpSparkBar()` 消费。
+
+### 5.14 TypeScript 声明：`web/kiriyama.d.ts`
+
+前端用 TS 时把 `web/kiriyama.d.ts` 加进 tsconfig 的 `include`，或在文件顶部
+`/// <reference path="./kiriyama.d.ts" />`。它声明了：
+
+- `Kiriyama.*Model` / `*Options`：三个组件的数据与样式（写 `window.KIRIYAMA_*_MODEL`
+  时字段有提示、拼错会报错）；
+- `Kiriyama.Module`：`loadTable / loadPie / loadSparkBar / pieHovered / pieSliceCount`；
+- `Kiriyama.KiriyamaCAPI`：全部 `kiriyama_*` C 接口的签名（`ccall` 的高级用法）。
+
+```ts
+const pie: Kiriyama.PieModel = {
+  slices: [{ label: 'A', value: 1 }],
+  options: { labelFontSize: 14, tooltipSide: 'right' }
+};
+window.KIRIYAMA_PIE_MODEL = pie;
+```
+
+声明文件不写 `export`——浏览器里是全局脚本，页面内联 `<script>` 也能吃到类型。
 
 要加新的跨语言入口时，照 `kiriyama_table_load` 的样子在 C++ 侧加  
 `EMSCRIPTEN_KEEPALIVE` 函数，再在 `entry.js` 里包一层即可，页面永远只跟 `entry.js` 说话。
@@ -659,3 +783,10 @@ Module.loadPie(model);         // 饼图：{ slices: [{ label, value }, ...] }
   否则 shell 的 `aspect-ratio` 被 SDL 顶掉，letterbox 在页面里多出一条空白。
 - **Debug wasm 产物用 `-g1` 保留可读格式**；Release 的 closure 压缩没法关——
   可读的源是 `*_shell.html`，产物只做部署。
+- **`Painter` 的描边函数必须自己 `applyColor()`**。`SDL_RenderLine` / `SDL_RenderRect`
+  用的是渲染器的当前色，不是 `color_` 字段。`strokeRoundRect` 曾经漏了这一步，
+  描边会沿用上一次残留的颜色（前面刚好用同色填充 → 边框"画了但看不见"）。
+  加新的描边 API 时对照 `strokeRect` / `polyline` 抄。
+- **命中区"只对一半"先查坐标系**。`compute*Layout()` 都是纯几何（原点在图表左上角），
+  组件负责平移到节点本地坐标；渲染层和 `hitShape()` 必须用同一套坐标，
+  否则命中区整体偏移 `frame` 原点（SparkBar 上移 96px，柱下半截点不到）。

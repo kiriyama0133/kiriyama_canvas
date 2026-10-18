@@ -156,7 +156,7 @@ echo "==> 字体: $SELECTION  ($CONFIG)"
 cmake "${CMAKE_ARGS[@]}"
 
 # ---------------------------------------------------------------- 构建
-TARGETS=(kiriyama_text_demo kiriyama_table_demo)
+TARGETS=(kiriyama_canvas)
 [ "$WITH_TESTS" -eq 1 ] && TARGETS+=(kiriyama_text_tests)
 
 BUILD_ARGS=(--build "$BUILD_DIR" --target "${TARGETS[@]}")

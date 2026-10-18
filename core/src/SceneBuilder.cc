@@ -20,13 +20,25 @@ constexpr double kEdgeTolerance = 0.5;
 /// 曲线细分的总点数上限，防止 10 万个点 × 16 段把 wasm 内存吃穿。
 constexpr std::size_t kMaxCurvePoints = 4000;
 
-// ---------------------------------------------------------------- 主题
+// ---------------------------------------------------------------- 上下文
+//
+// 之前 canvasSize / LayoutOptions / SceneBuildOptions 在每个 build* 之间
+// 长途透传，签名越叠越长。这里收拢成一个只读上下文：
+//   ctx.canvas  画布尺寸（几何的原点基准）
+//   ctx.lo      排版选项（字号 / gap / 测量回调）
+//   ctx.opt     本图表的绘制选项（哪些要画、几何参数、度量）
+// 主题不在这里——描述树只发语义 token，颜色解析在渲染层。
 
-const Color& accentOf(const std::vector<Color>& palette, std::size_t index) {
-    return palette[index % palette.size()];
-}
+struct BuildContext {
+    Vec2d canvas{};
+    const LayoutOptions& lo;
+    const SceneBuildOptions& opt;
+};
 
 // ---------------------------------------------------------------- 节点工厂
+//
+// 颜色一律 Paint（语义 token 或调用方给的直接色），这里没有任何
+// "从 theme 取色"的代码——主题切换不重建场景树的前提。
 
 std::unique_ptr<SceneNode> makeNode(NodeType type, std::string key, std::string name = {}) {
     auto node = std::make_unique<SceneNode>(type, std::move(key));
@@ -40,70 +52,69 @@ std::unique_ptr<SceneNode> makeGroup(std::string key, std::string name = {}) {
     return makeNode(NodeType::Group, std::move(key), std::move(name));
 }
 
-std::unique_ptr<SceneNode> makeRect(std::string key, const RectD& frame, const Color& fill,
+std::unique_ptr<SceneNode> makeRect(std::string key, const RectD& frame, Paint fill,
                                     double cornerRadius = 0.0, std::string name = {}) {
     auto node = makeNode(NodeType::Rect, std::move(key), std::move(name));
     node->setFrame(frame);
     SceneStyle style;
-    style.fill = fill;
+    style.fill = std::move(fill);
     style.cornerRadius = cornerRadius;
     node->setStyle(style);
     return node;
 }
 
-std::unique_ptr<SceneNode> makeLine(std::string key, Vec2d from, Vec2d to, const Color& stroke,
+std::unique_ptr<SceneNode> makeLine(std::string key, Vec2d from, Vec2d to, Paint stroke,
                                     double width) {
     auto node = makeNode(NodeType::Line, std::move(key));
     node->setPoints({from, to});
     SceneStyle style;
-    style.stroke = stroke;
+    style.stroke = std::move(stroke);
     style.strokeWidth = width;
     node->setStyle(style);
     return node;
 }
 
 std::unique_ptr<SceneNode> makePolyline(std::string key, std::vector<Vec2d> points,
-                                        const Color& stroke, double width) {
+                                        Paint stroke, double width) {
     auto node = makeNode(NodeType::Polyline, std::move(key));
     node->setPoints(std::move(points));
     SceneStyle style;
-    style.stroke = stroke;
+    style.stroke = std::move(stroke);
     style.strokeWidth = width;
     node->setStyle(style);
     return node;
 }
 
-std::unique_ptr<SceneNode> makePolygon(std::string key, std::vector<Vec2d> points,
-                                       const Color& fill, const Color& stroke,
-                                       double strokeWidth) {
+std::unique_ptr<SceneNode> makePolygon(std::string key, std::vector<Vec2d> points, Paint fill,
+                                       Paint stroke, double strokeWidth) {
     auto node = makeNode(NodeType::Polygon, std::move(key));
     node->setPoints(std::move(points));
     SceneStyle style;
-    style.fill = fill;
-    style.stroke = stroke;
+    style.fill = std::move(fill);
+    style.stroke = std::move(stroke);
     style.strokeWidth = strokeWidth;
     node->setStyle(style);
     return node;
 }
 
 std::unique_ptr<SceneNode> makeEllipse(std::string key, Vec2d center, double radius,
-                                       const Color& fill) {
+                                       Paint fill) {
     auto node = makeNode(NodeType::Ellipse, std::move(key));
     node->setFrame({center.x - radius, center.y - radius, radius * 2.0, radius * 2.0});
     SceneStyle style;
-    style.fill = fill;
+    style.fill = std::move(fill);
     node->setStyle(style);
     return node;
 }
 
 std::unique_ptr<SceneNode> makeText(std::string key, std::string text, const RectD& frame,
-                                    double fontSize, const Color& color, TextAlign align,
+                                    double fontSize, Paint color, TextAlign align,
                                     TextBaseline baseline) {
     auto node = makeNode(NodeType::Text, std::move(key));
     node->setText(std::move(text));
     node->setFrame(frame);
     SceneStyle style;
-    style.fill = color;
+    style.fill = std::move(color);
     style.fontSize = fontSize;
     style.textAlign = align;
     style.textBaseline = baseline;
@@ -330,16 +341,15 @@ std::vector<Vec2d> monotoneCurve(std::span<const Vec2d> points, int segments) {
 
 // ---------------------------------------------------------------- 组装
 
-std::unique_ptr<SceneNode> buildGrid(const ChartLayout& layout, const SceneBuildOptions& options,
+std::unique_ptr<SceneNode> buildGrid(const ChartLayout& layout, const BuildContext& ctx,
                                      bool categoryAxis) {
     auto group = makeGroup("grid", "grid");
-    if (!options.showGrid) {
+    if (!ctx.opt.showGrid) {
         return group;
     }
 
-    const ChartTheme& theme = options.theme;
     int index = 0;
-    if (layout.xAxis.visible && (!categoryAxis || options.showCategoryGrid)) {
+    if (layout.xAxis.visible && (!categoryAxis || ctx.opt.showCategoryGrid)) {
         for (const TickMark& tick : layout.xAxis.ticks) {
             const double x = tick.position;
             if (std::abs(x - layout.plot.left()) < kEdgeTolerance ||
@@ -348,7 +358,7 @@ std::unique_ptr<SceneNode> buildGrid(const ChartLayout& layout, const SceneBuild
             }
             group->appendChild(makeLine("grid.x." + std::to_string(index++),
                                         {x, layout.plot.top()}, {x, layout.plot.bottom()},
-                                        theme.grid, theme.gridWidth));
+                                        ColorToken::Grid, ctx.opt.gridWidth));
         }
     }
 
@@ -362,120 +372,110 @@ std::unique_ptr<SceneNode> buildGrid(const ChartLayout& layout, const SceneBuild
             }
             group->appendChild(makeLine("grid.y." + std::to_string(index++),
                                         {layout.plot.left(), y}, {layout.plot.right(), y},
-                                        theme.grid, theme.gridWidth));
+                                        ColorToken::Grid, ctx.opt.gridWidth));
         }
     }
     return group;
 }
 
-std::unique_ptr<SceneNode> buildAxisTexts(const ChartLayout& layout,
-                                          const LayoutOptions& layoutOptions,
-                                          const SceneBuildOptions& options, Vec2d canvasSize) {
+std::unique_ptr<SceneNode> buildAxisTexts(const ChartLayout& layout, const BuildContext& ctx) {
     auto group = makeGroup("axis.labels", "axis labels");
-    if (!options.showAxisLabels) {
+    if (!ctx.opt.showAxisLabels) {
         return group;
     }
-    const ChartTheme& theme = options.theme;
 
     if (layout.xAxis.visible) {
-        const double fontSize = layoutOptions.x.labelFontSize;
-        const double gap = layoutOptions.x.labelGap;
+        const double fontSize = ctx.lo.x.labelFontSize;
+        const double gap = ctx.lo.x.labelGap;
         for (std::size_t i = 0; i < layout.xAxis.ticks.size(); ++i) {
             const TickMark& tick = layout.xAxis.ticks[i];
             if (tick.label.empty()) {
                 continue;
             }
-            const TextMetrics metrics = measureText(layoutOptions, tick.label, fontSize);
+            const TextMetrics metrics = measureText(ctx.lo, tick.label, fontSize);
             const RectD frame = frameAt({tick.position, layout.plot.bottom() + gap}, metrics,
                                         TextAlign::Center, TextBaseline::Top);
             group->appendChild(makeText("axis.x.tick." + std::to_string(i), tick.label, frame,
-                                        fontSize, theme.label, TextAlign::Center,
+                                        fontSize, ColorToken::Label, TextAlign::Center,
                                         TextBaseline::Top));
         }
     }
 
     if (layout.yAxis.visible) {
-        const double fontSize = layoutOptions.y.labelFontSize;
-        const double gap = layoutOptions.y.labelGap;
+        const double fontSize = ctx.lo.y.labelFontSize;
+        const double gap = ctx.lo.y.labelGap;
         for (std::size_t i = 0; i < layout.yAxis.ticks.size(); ++i) {
             const TickMark& tick = layout.yAxis.ticks[i];
             if (tick.label.empty()) {
                 continue;
             }
-            const TextMetrics metrics = measureText(layoutOptions, tick.label, fontSize);
+            const TextMetrics metrics = measureText(ctx.lo, tick.label, fontSize);
             const RectD frame = frameAt({layout.plot.left() - gap, tick.position}, metrics,
                                         TextAlign::Right, TextBaseline::Middle);
             group->appendChild(makeText("axis.y.tick." + std::to_string(i), tick.label, frame,
-                                        fontSize, theme.label, TextAlign::Right,
+                                        fontSize, ColorToken::Label, TextAlign::Right,
                                         TextBaseline::Middle));
         }
     }
 
     if (layout.hasSecondaryY && layout.secondaryYAxis.visible) {
-        const double fontSize = layoutOptions.secondaryY.labelFontSize;
-        const double gap = layoutOptions.plotGap;
+        const double fontSize = ctx.lo.secondaryY.labelFontSize;
+        const double gap = ctx.lo.plotGap;
         for (std::size_t i = 0; i < layout.secondaryYAxis.ticks.size(); ++i) {
             const TickMark& tick = layout.secondaryYAxis.ticks[i];
             if (tick.label.empty()) {
                 continue;
             }
-            const TextMetrics metrics = measureText(layoutOptions, tick.label, fontSize);
+            const TextMetrics metrics = measureText(ctx.lo, tick.label, fontSize);
             const RectD frame = frameAt({layout.plot.right() + gap, tick.position}, metrics,
                                         TextAlign::Left, TextBaseline::Middle);
             group->appendChild(makeText("axis.y2.tick." + std::to_string(i), tick.label, frame,
-                                        fontSize, theme.label, TextAlign::Left,
+                                        fontSize, ColorToken::Label, TextAlign::Left,
                                         TextBaseline::Middle));
         }
     }
-
-    (void)canvasSize;
     return group;
 }
 
-std::unique_ptr<SceneNode> buildAxisTitles(const ChartLayout& layout,
-                                           const LayoutOptions& layoutOptions,
-                                           const SceneBuildOptions& options, Vec2d canvasSize) {
+std::unique_ptr<SceneNode> buildAxisTitles(const ChartLayout& layout, const BuildContext& ctx) {
     auto group = makeGroup("axis.titles", "axis titles");
-    if (!options.showAxisTitles) {
+    if (!ctx.opt.showAxisTitles) {
         return group;
     }
-    const ChartTheme& theme = options.theme;
 
-    if (layout.xAxis.visible && !layoutOptions.x.title.empty()) {
-        const double fontSize = layoutOptions.x.titleFontSize;
-        const TextMetrics metrics = measureText(layoutOptions, layoutOptions.x.title, fontSize);
+    if (layout.xAxis.visible && !ctx.lo.x.title.empty()) {
+        const double fontSize = ctx.lo.x.titleFontSize;
+        const TextMetrics metrics = measureText(ctx.lo, ctx.lo.x.title, fontSize);
         const double y = std::max(layout.plot.bottom() + fontSize * 0.75,
-                                  canvasSize.y - layoutOptions.padding.bottom - fontSize * 0.75);
+                                  ctx.canvas.y - ctx.lo.padding.bottom - fontSize * 0.75);
         const RectD frame = frameAt({layout.plot.center().x, y}, metrics, TextAlign::Center,
                                     TextBaseline::Middle);
-        group->appendChild(makeText("axis.x.title", layoutOptions.x.title, frame, fontSize,
-                                    theme.label, TextAlign::Center, TextBaseline::Middle));
+        group->appendChild(makeText("axis.x.title", ctx.lo.x.title, frame, fontSize,
+                                    ColorToken::Label, TextAlign::Center,
+                                    TextBaseline::Middle));
     }
 
-    if (layout.yAxis.visible && !layoutOptions.y.title.empty()) {
-        const double fontSize = layoutOptions.y.titleFontSize;
-        const TextMetrics metrics = measureText(layoutOptions, layoutOptions.y.title, fontSize);
+    if (layout.yAxis.visible && !ctx.lo.y.title.empty()) {
+        const double fontSize = ctx.lo.y.titleFontSize;
+        const TextMetrics metrics = measureText(ctx.lo, ctx.lo.y.title, fontSize);
         // 旋转 -90°：frame 放在原点，再把盒子中心搬到目标位置。
-        const Vec2d center{layoutOptions.padding.left + fontSize * 0.75,
-                           layout.plot.center().y};
-        auto node = makeText("axis.y.title", layoutOptions.y.title,
-                             {0.0, 0.0, metrics.width, metrics.height}, fontSize, theme.label,
-                             TextAlign::Center, TextBaseline::Middle);
+        const Vec2d center{ctx.lo.padding.left + fontSize * 0.75, layout.plot.center().y};
+        auto node = makeText("axis.y.title", ctx.lo.y.title,
+                             {0.0, 0.0, metrics.width, metrics.height}, fontSize,
+                             ColorToken::Label, TextAlign::Center, TextBaseline::Middle);
         node->setTransform(Affine2D::Translation(center) * Affine2D::Rotation(-kHalfPi) *
                            Affine2D::Translation({-metrics.width * 0.5, -metrics.height * 0.5}));
         group->appendChild(std::move(node));
     }
 
-    if (layout.hasSecondaryY && layoutOptions.secondaryY.visible &&
-        !layoutOptions.secondaryY.title.empty()) {
-        const double fontSize = layoutOptions.secondaryY.titleFontSize;
-        const TextMetrics metrics =
-            measureText(layoutOptions, layoutOptions.secondaryY.title, fontSize);
-        const Vec2d center{canvasSize.x - layoutOptions.padding.right - fontSize * 0.75,
+    if (layout.hasSecondaryY && ctx.lo.secondaryY.visible && !ctx.lo.secondaryY.title.empty()) {
+        const double fontSize = ctx.lo.secondaryY.titleFontSize;
+        const TextMetrics metrics = measureText(ctx.lo, ctx.lo.secondaryY.title, fontSize);
+        const Vec2d center{ctx.canvas.x - ctx.lo.padding.right - fontSize * 0.75,
                            layout.plot.center().y};
-        auto node = makeText("axis.y2.title", layoutOptions.secondaryY.title,
-                             {0.0, 0.0, metrics.width, metrics.height}, fontSize, theme.label,
-                             TextAlign::Center, TextBaseline::Middle);
+        auto node = makeText("axis.y2.title", ctx.lo.secondaryY.title,
+                             {0.0, 0.0, metrics.width, metrics.height}, fontSize,
+                             ColorToken::Label, TextAlign::Center, TextBaseline::Middle);
         node->setTransform(Affine2D::Translation(center) * Affine2D::Rotation(kHalfPi) *
                            Affine2D::Translation({-metrics.width * 0.5, -metrics.height * 0.5}));
         group->appendChild(std::move(node));
@@ -483,27 +483,25 @@ std::unique_ptr<SceneNode> buildAxisTitles(const ChartLayout& layout,
     return group;
 }
 
-std::unique_ptr<SceneNode> buildAxisLines(const ChartLayout& layout,
-                                          const SceneBuildOptions& options) {
+std::unique_ptr<SceneNode> buildAxisLines(const ChartLayout& layout, const BuildContext& ctx) {
     auto group = makeGroup("axis.lines", "axis lines");
-    if (!options.showAxisLines) {
+    if (!ctx.opt.showAxisLines) {
         return group;
     }
-    const ChartTheme& theme = options.theme;
     if (layout.xAxis.visible) {
         group->appendChild(makeLine("axis.x.line", {layout.plot.left(), layout.plot.bottom()},
                                     {layout.plot.right(), layout.plot.bottom()},
-                                    theme.axisLine, theme.axisWidth));
+                                    ColorToken::AxisLine, ctx.opt.axisWidth));
     }
     if (layout.yAxis.visible) {
         group->appendChild(makeLine("axis.y.line", {layout.plot.left(), layout.plot.top()},
                                     {layout.plot.left(), layout.plot.bottom()},
-                                    theme.axisLine, theme.axisWidth));
+                                    ColorToken::AxisLine, ctx.opt.axisWidth));
     }
     if (layout.hasSecondaryY && layout.secondaryYAxis.visible) {
         group->appendChild(makeLine("axis.y2.line", {layout.plot.right(), layout.plot.top()},
                                     {layout.plot.right(), layout.plot.bottom()},
-                                    theme.axisLine, theme.axisWidth));
+                                    ColorToken::AxisLine, ctx.opt.axisWidth));
     }
     return group;
 }
@@ -533,9 +531,9 @@ std::vector<std::vector<Vec2d>> splitSeries(const Series& series, const ChartLay
 }
 
 std::unique_ptr<SceneNode> buildLineSeries(const Dataset& dataset, const ChartLayout& layout,
-                                           const SceneBuildOptions& options) {
+                                           const BuildContext& ctx) {
     auto group = makeGroup("series", "series");
-    const ChartTheme& theme = options.theme;
+    const SceneBuildOptions& options = ctx.opt;
     const std::vector<std::string> keys = makeSeriesKeys(dataset);
 
     // 右轴系列从后往前数，和 boundsOfSeries 保持一致。
@@ -554,7 +552,6 @@ std::unique_ptr<SceneNode> buildLineSeries(const Dataset& dataset, const ChartLa
     for (std::size_t s = 0; s < dataset.series.size(); ++s) {
         const Series& series = dataset.series[s];
         const bool useSecondaryY = s >= secondaryFirst;
-        const Color color = theme.seriesColor(s);
 
         auto seriesNode = makeGroup(keys[s], series.name.empty() ? "series" : series.name);
         const auto segments = splitSeries(series, layout, useSecondaryY);
@@ -575,21 +572,26 @@ std::unique_ptr<SceneNode> buildLineSeries(const Dataset& dataset, const ChartLa
                 std::vector<Vec2d> area = curve;
                 area.push_back({curve.back().x, areaBaseline});
                 area.push_back({curve.front().x, areaBaseline});
-                Color areaFill = color;
-                areaFill.a *= static_cast<float>(math::saturate(options.areaOpacity));
+                // 系列色的淡版：token 不变，只缩透明度——主题切换后面积色跟着变。
                 seriesNode->appendChild(makePolygon(segmentKey + ".area", std::move(area),
-                                                    areaFill, Color{}, 0.0));
+                                                    Paint::series(
+                                                        s,
+                                                        static_cast<float>(
+                                                            math::saturate(options.areaOpacity))),
+                                                    Paint{}, 0.0));
             }
 
             if (options.lineWidth > 0.0 && curve.size() >= 2) {
                 seriesNode->appendChild(
-                    makePolyline(segmentKey + ".line", curve, color, options.lineWidth));
+                    makePolyline(segmentKey + ".line", curve, Paint::series(s),
+                                 options.lineWidth));
             }
 
             // 孤立点：折线只有两个端点都画不出来，给它一个点。
             if (curve.size() == 1 && !options.showPoints && options.pointRadius > 0.0) {
                 seriesNode->appendChild(makeEllipse(segmentKey + ".dot", curve.front(),
-                                                     std::max(options.pointRadius, 1.5), color));
+                                                     std::max(options.pointRadius, 1.5),
+                                                     Paint::series(s)));
             }
         }
 
@@ -603,7 +605,7 @@ std::unique_ptr<SceneNode> buildLineSeries(const Dataset& dataset, const ChartLa
                 const Vec2d pixel = useSecondaryY ? layout.toPixelSecondaryY(point.x, point.y)
                                                   : layout.toPixel(point.x, point.y);
                 pointsGroup->appendChild(makeEllipse(keys[s] + ".p." + std::to_string(j), pixel,
-                                                     options.pointRadius, color));
+                                                     options.pointRadius, Paint::series(s)));
             }
             seriesNode->appendChild(std::move(pointsGroup));
         }
@@ -616,19 +618,18 @@ std::unique_ptr<SceneNode> buildLineSeries(const Dataset& dataset, const ChartLa
 }
 
 std::unique_ptr<SceneNode> buildBars(const std::vector<BarRect>& bars, const ChartLayout& layout,
-                                     const LayoutOptions& layoutOptions,
-                                     const SceneBuildOptions& options) {
+                                     const BuildContext& ctx) {
     auto group = makeGroup("bars", "bars");
-    const ChartTheme& theme = options.theme;
+    const SceneBuildOptions& options = ctx.opt;
 
-    const float alpha = static_cast<float>(math::saturate(options.barOpacity));
     for (const BarRect& bar : bars) {
         const std::string key = "bar." + std::to_string(bar.seriesIndex) + "." +
                                 std::to_string(bar.categoryIndex);
-        Color fill = theme.seriesColor(bar.seriesIndex);
-        fill.a *= alpha;
-        group->appendChild(
-            makeRect(key, bar.rect, fill, options.barCornerRadius, "bar"));
+        group->appendChild(makeRect(key, bar.rect,
+                                    Paint::series(bar.seriesIndex,
+                                                  static_cast<float>(
+                                                      math::saturate(options.barOpacity))),
+                                    options.barCornerRadius, "bar"));
     }
 
     if (!options.showValueLabels) {
@@ -637,11 +638,11 @@ std::unique_ptr<SceneNode> buildBars(const std::vector<BarRect>& bars, const Cha
 
     // 数值标签单独一组，叠在柱子上方，避免和柱子一起被裁剪。
     auto labels = makeGroup("bar.labels", "bar value labels");
-    const double fontSize = theme.labelFontSize;
+    const double fontSize = options.labelFontSize;
     const double dataSpan = std::max(1e-9, layout.yAxis.domain.span());
     for (const BarRect& bar : bars) {
         const std::string text = formatValueLabel(bar.value, dataSpan);
-        const TextMetrics metrics = measureText(layoutOptions, text, fontSize);
+        const TextMetrics metrics = measureText(ctx.lo, text, fontSize);
         if (metrics.width <= 0.0 || bar.rect.width < 6.0 ||
             bar.rect.height < metrics.height + 6.0) {
             continue;
@@ -653,91 +654,35 @@ std::unique_ptr<SceneNode> buildBars(const std::vector<BarRect>& bars, const Cha
         const RectD frame = frameAt(anchor, metrics, TextAlign::Center, baseline);
         labels->appendChild(makeText("bar.value." + std::to_string(bar.seriesIndex) + "." +
                                          std::to_string(bar.categoryIndex),
-                                     text, frame, fontSize, theme.label, TextAlign::Center,
-                                     baseline));
+                                     text, frame, fontSize, ColorToken::Label,
+                                     TextAlign::Center, baseline));
     }
     group->appendChild(std::move(labels));
     return group;
 }
 
-std::unique_ptr<SceneNode> buildChartTitle(const SceneBuildOptions& options, Vec2d topLeft,
-                                           const LayoutOptions& measureOptions) {
-    const ChartTheme& theme = options.theme;
-    const TextMetrics metrics = measureText(measureOptions, options.title, theme.titleFontSize);
+std::unique_ptr<SceneNode> buildChartTitle(const BuildContext& ctx, Vec2d topLeft) {
+    const TextMetrics metrics = measureText(ctx.lo, ctx.opt.title, ctx.opt.titleFontSize);
     const RectD frame = frameAt(topLeft, metrics, TextAlign::Left, TextBaseline::Top);
-    return makeText("title", options.title, frame, theme.titleFontSize, theme.title,
+    return makeText("title", ctx.opt.title, frame, ctx.opt.titleFontSize, ColorToken::Title,
                     TextAlign::Left, TextBaseline::Top);
 }
 
-std::unique_ptr<SceneNode> buildEmptyText(const SceneBuildOptions& options, Vec2d canvasSize,
-                                          const LayoutOptions& measureOptions) {
+std::unique_ptr<SceneNode> buildEmptyText(const BuildContext& ctx) {
     auto group = makeGroup("empty", "empty");
-    if (!options.showEmptyText || options.emptyText.empty()) {
+    if (!ctx.opt.showEmptyText || ctx.opt.emptyText.empty()) {
         return group;
     }
-    const TextMetrics metrics =
-        measureText(measureOptions, options.emptyText, options.theme.labelFontSize);
-    const Vec2d center{canvasSize.x * 0.5, canvasSize.y * 0.5};
-    const RectD frame =
-        frameAt(center, metrics, TextAlign::Center, TextBaseline::Middle);
-    group->appendChild(makeText("empty.text", options.emptyText, frame,
-                                options.theme.labelFontSize, options.theme.emptyText,
-                                TextAlign::Center, TextBaseline::Middle));
+    const TextMetrics metrics = measureText(ctx.lo, ctx.opt.emptyText, ctx.opt.labelFontSize);
+    const Vec2d center{ctx.canvas.x * 0.5, ctx.canvas.y * 0.5};
+    const RectD frame = frameAt(center, metrics, TextAlign::Center, TextBaseline::Middle);
+    group->appendChild(makeText("empty.text", ctx.opt.emptyText, frame, ctx.opt.labelFontSize,
+                                ColorToken::EmptyText, TextAlign::Center,
+                                TextBaseline::Middle));
     return group;
 }
 
 }  // namespace
-
-// ---------------------------------------------------------------- 主题
-
-const std::vector<Color>& defaultSeriesPalette() {
-    static const std::vector<Color> palette = {
-        Color::FromBytes(0x3E, 0x6D, 0xB5),  // 蓝
-        Color::FromBytes(0x2E, 0x8A, 0x85),  // 青
-        Color::FromBytes(0xC2, 0x76, 0x2A),  // 橙
-        Color::FromBytes(0x7A, 0x5A, 0xA6),  // 紫
-        Color::FromBytes(0xC0, 0x50, 0x4D),  // 红
-        Color::FromBytes(0x4F, 0x8A, 0x3D),  // 绿
-        Color::FromBytes(0x6B, 0x72, 0x80),  // 灰蓝
-        Color::FromBytes(0xB4, 0x5C, 0x7F),  // 玫红
-    };
-    return palette;
-}
-
-ChartTheme ChartTheme::Light() {
-    ChartTheme theme;
-    theme.series = defaultSeriesPalette();
-    return theme;
-}
-
-ChartTheme ChartTheme::Dark() {
-    ChartTheme theme;
-    theme.background = Color::FromBytes(0x1C, 0x1C, 0x1E);
-    theme.plotBackground = Color::FromBytes(0x24, 0x24, 0x27);
-    theme.grid = Color::FromBytes(0x3A, 0x3A, 0x3F);
-    theme.axisLine = Color::FromBytes(0x55, 0x55, 0x5C);
-    theme.label = Color::FromBytes(0xA8, 0xA8, 0xB0);
-    theme.title = Color::FromBytes(0xEC, 0xEC, 0xF0);
-    theme.emptyText = Color::FromBytes(0x77, 0x77, 0x80);
-    theme.series = {
-        Color::FromBytes(0x6F, 0xA8, 0xDC),
-        Color::FromBytes(0x4F, 0xB3, 0xAC),
-        Color::FromBytes(0xE0, 0xA4, 0x58),
-        Color::FromBytes(0xA9, 0x8B, 0xD6),
-        Color::FromBytes(0xE0, 0x7A, 0x75),
-        Color::FromBytes(0x7D, 0xB8, 0x6A),
-        Color::FromBytes(0x96, 0xA0, 0xAE),
-        Color::FromBytes(0xD9, 0x8B, 0xAB),
-    };
-    return theme;
-}
-
-Color ChartTheme::seriesColor(std::size_t index) const {
-    if (!series.empty()) {
-        return accentOf(series, index);
-    }
-    return accentOf(defaultSeriesPalette(), index);
-}
 
 // ---------------------------------------------------------------- 折线 / 柱状
 
@@ -749,7 +694,6 @@ SceneBuildResult buildCartesian(const Dataset& dataset, Vec2d canvasSize,
     SceneBuildResult result;
     result.issues = countIssues(dataset);
 
-    const ChartTheme& theme = options.theme;
     canvasSize = {std::max(0.0, canvasSize.x), std::max(0.0, canvasSize.y)};
 
     LayoutOptions lo = layoutOptions;
@@ -766,8 +710,7 @@ SceneBuildResult buildCartesian(const Dataset& dataset, Vec2d canvasSize,
 
     const double titleTop = lo.padding.top;
     if (options.showChartTitle && !options.title.empty()) {
-        const double titleHeight =
-            measureText(lo, options.title, theme.titleFontSize).height;
+        const double titleHeight = measureText(lo, options.title, options.titleFontSize).height;
         lo.padding.top += titleHeight + options.titleGap;
     }
 
@@ -782,39 +725,40 @@ SceneBuildResult buildCartesian(const Dataset& dataset, Vec2d canvasSize,
                                    : computeLayout(canvasSize, bounds, lo);
     const ChartLayout& layout = result.layout;
 
+    const BuildContext ctx{canvasSize, lo, options};
+
     auto root = makeGroup("chart", "chart");
     root->appendChild(makeRect("background", {0.0, 0.0, canvasSize.x, canvasSize.y},
-                               theme.background));
+                               ColorToken::Background));
 
     const bool hasData = dataset.validCount() > 0;
     if (!hasData || !layout.valid) {
         if (!hasData) {
-            root->appendChild(buildEmptyText(options, canvasSize, lo));
+            root->appendChild(buildEmptyText(ctx));
         }
         result.root = std::move(root);
         result.valid = false;
         return result;
     }
 
-    if (theme.plotBackground.visible()) {
-        root->appendChild(makeRect("plot.bg", layout.plot, theme.plotBackground));
+    if (options.showPlotBackground) {
+        root->appendChild(makeRect("plot.bg", layout.plot, ColorToken::PlotBackground));
     }
-
-    root->appendChild(buildGrid(layout, options, kind == ChartKind::Bar));
+    root->appendChild(buildGrid(layout, ctx, kind == ChartKind::Bar));
 
     if (kind == ChartKind::Bar) {
         result.bars = computeBarRects(dataset, layout, options.barMode, options.barOptions);
-        root->appendChild(buildBars(result.bars, layout, lo, options));
+        root->appendChild(buildBars(result.bars, layout, ctx));
     } else {
-        root->appendChild(buildLineSeries(dataset, layout, options));
+        root->appendChild(buildLineSeries(dataset, layout, ctx));
     }
 
-    root->appendChild(buildAxisLines(layout, options));
-    root->appendChild(buildAxisTexts(layout, lo, options, canvasSize));
-    root->appendChild(buildAxisTitles(layout, lo, options, canvasSize));
+    root->appendChild(buildAxisLines(layout, ctx));
+    root->appendChild(buildAxisTexts(layout, ctx));
+    root->appendChild(buildAxisTitles(layout, ctx));
 
     if (options.showChartTitle && !options.title.empty()) {
-        root->appendChild(buildChartTitle(options, {lo.padding.left, titleTop}, lo));
+        root->appendChild(buildChartTitle(ctx, {lo.padding.left, titleTop}));
     }
 
     result.root = std::move(root);
@@ -843,40 +787,48 @@ SceneBuildResult buildPieChart(const PieChartData& data, Vec2d canvasSize,
     SceneBuildResult result;
     result.issues = countIssues(data);
 
-    const ChartTheme& theme = options.theme;
     canvasSize = {std::max(0.0, canvasSize.x), std::max(0.0, canvasSize.y)};
 
     LayoutOptions measureOptions;
+    measureOptions.measureText = options.textMeasure;
+
     PieLayoutOptions pieOptions = options.pie;
     if (options.showChartTitle && !options.title.empty()) {
         pieOptions.padding.top +=
-            measureText(measureOptions, options.title, theme.titleFontSize).height +
+            measureText(measureOptions, options.title, options.titleFontSize).height +
             options.titleGap;
     }
 
     result.pie = computePieLayout(canvasSize, data, pieOptions);
     const PieLayout& layout = result.pie;
 
+    const BuildContext ctx{canvasSize, measureOptions, options};
+
     auto root = makeGroup("chart", "chart");
     root->appendChild(makeRect("background", {0.0, 0.0, canvasSize.x, canvasSize.y},
-                               theme.background));
+                               ColorToken::Background));
 
     if (!layout.valid) {
-        root->appendChild(buildEmptyText(options, canvasSize, measureOptions));
+        root->appendChild(buildEmptyText(ctx));
         result.root = std::move(root);
         result.valid = false;
         return result;
     }
 
     auto sectors = makeGroup("slices", "slices");
-    const Color gapColor = theme.background;
+    // 缝隙描边：调用方给了直接色就用之，否则用背景色 token"擦"出缝（跟主题走）。
+    const Paint gapPaint =
+        options.pieGapColor.visible() ? Paint{options.pieGapColor} : Paint{ColorToken::Background};
+    // 标签文字：组件给了覆盖色用直接色，否则跟随主题。
+    const Paint labelPaint = options.pieLabelColorOverride.visible()
+                                 ? Paint{options.pieLabelColorOverride}
+                                 : Paint{ColorToken::Label};
     for (const PieSector& sector : layout.sectors) {
         const std::size_t index = sector.sliceIndex;
-        const Color fill = theme.seriesColor(index);
         std::vector<Vec2d> points = sectorPolygon(sector, layout, options.pieSegments);
-        sectors->appendChild(
-            makePolygon("slice." + std::to_string(index), std::move(points), fill, gapColor,
-                        std::max(0.0, options.pieSliceGap)));
+        sectors->appendChild(makePolygon("slice." + std::to_string(index), std::move(points),
+                                         Paint::series(index), gapPaint,
+                                         std::max(0.0, options.pieSliceGap)));
 
         if (!options.showPieLabels || index >= data.slices.size()) {
             continue;
@@ -895,7 +847,7 @@ SceneBuildResult buildPieChart(const PieChartData& data, Vec2d canvasSize,
             continue;
         }
 
-        const TextMetrics metrics = measureText(measureOptions, text, theme.labelFontSize);
+        const TextMetrics metrics = measureText(measureOptions, text, options.labelFontSize);
         const double cosine = std::cos(sector.midAngle);
         TextAlign align = TextAlign::Center;
         double offset = 0.0;
@@ -908,18 +860,16 @@ SceneBuildResult buildPieChart(const PieChartData& data, Vec2d canvasSize,
         }
         const Vec2d anchor{sector.labelAnchor.x + offset, sector.labelAnchor.y};
         const RectD frame =
-            clampToCanvas(frameAt(anchor, metrics, align, TextBaseline::Middle),
-                          layout.canvas);
+            clampToCanvas(frameAt(anchor, metrics, align, TextBaseline::Middle), layout.canvas);
         sectors->appendChild(makeText("slice.label." + std::to_string(index), text, frame,
-                                      theme.labelFontSize, theme.label, align,
+                                      options.labelFontSize, labelPaint, align,
                                       TextBaseline::Middle));
     }
     root->appendChild(std::move(sectors));
 
     if (options.showChartTitle && !options.title.empty()) {
-        root->appendChild(buildChartTitle(options, {pieOptions.padding.left,
-                                                    options.pie.padding.top},
-                                          measureOptions));
+        root->appendChild(buildChartTitle(ctx, {pieOptions.padding.left,
+                                                options.pie.padding.top}));
     }
 
     result.root = std::move(root);
