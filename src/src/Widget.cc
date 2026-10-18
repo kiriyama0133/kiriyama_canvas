@@ -56,8 +56,12 @@ RectD Widget::hitBounds() const noexcept {
     return toWorldBounds(area, worldTransform());
 }
 
-bool Widget::hitTest(const Vec2d& worldPoint) const noexcept {
+bool Widget::hitShape(const Vec2d& worldPoint) const noexcept {
     return hitBounds().contains(worldPoint);
+}
+
+bool Widget::hitTest(const Vec2d& worldPoint) const noexcept {
+    return hitShape(worldPoint);
 }
 
 // ---------------------------------------------------------------- 驱动

@@ -325,39 +325,8 @@ std::vector<Vec2d> monotoneCurve(std::span<const Vec2d> points, int segments) {
 }
 
 // ---------------------------------------------------------------- 饼图几何
-
-std::vector<Vec2d> sectorPolygon(const PieSector& sector, const PieLayout& layout,
-                                 int fullCircleSegments) {
-    const double sweep = sector.sweepAngle;
-    const int full = std::clamp(fullCircleSegments, 12, 512);
-    int segments = static_cast<int>(std::ceil(std::abs(sweep) / kTwoPi * full));
-    segments = std::clamp(segments, 2, 512);
-    const double step = sweep / static_cast<double>(segments);
-    const bool annulus = layout.innerRadius > 0.0;
-
-    std::vector<Vec2d> points;
-    points.reserve(static_cast<std::size_t>(segments) * (annulus ? 2u : 1u) + 2u);
-    if (!annulus) {
-        points.push_back(layout.center);
-    }
-
-    auto at = [&](double angle, double radius) {
-        return Vec2d{layout.center.x + std::cos(angle) * radius,
-                     layout.center.y + std::sin(angle) * radius};
-    };
-
-    for (int i = 0; i <= segments; ++i) {
-        points.push_back(at(sector.startAngle + step * static_cast<double>(i),
-                            layout.outerRadius));
-    }
-    if (annulus) {
-        for (int i = segments; i >= 0; --i) {
-            points.push_back(at(sector.startAngle + step * static_cast<double>(i),
-                                layout.innerRadius));
-        }
-    }
-    return points;
-}
+// sectorPolygon 已提升为 core 公共几何（Layout.h）——
+// SceneBuilder 建描述树和渲染层画扇形共用一份，保证描的画的同一个形状。
 
 // ---------------------------------------------------------------- 组装
 

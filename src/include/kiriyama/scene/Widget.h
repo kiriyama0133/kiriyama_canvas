@@ -74,10 +74,16 @@ public:
     // ------------------------------------------------------------ 命中区
 
     /// 世界坐标下的命中矩形（AABB）。默认取 frame，frame 为空则取子树包围盒。
+    /// 注意它只是"外接框查询"，不是命中判定——判定走 hitTest -> hitShape。
     [[nodiscard]] RectD hitBounds() const noexcept;
     [[nodiscard]] bool hitTest(const Vec2d& worldPoint) const noexcept;
 
 protected:
+    /// 命中判定钩子。默认：世界 AABB 包含点（frame / 子树包围盒）。
+    /// 非矩形命中区（扇形极坐标、圆环、任意多边形）覆盖它做精确判定；
+    /// updatePresence 只经由 hitTest 走到这里，不会绕过。
+    [[nodiscard]] virtual bool hitShape(const Vec2d& worldPoint) const noexcept;
+
     /// 每帧回调。进来时指针状态（inside / pressed / clicked / delta）已经更新完毕。
     virtual void onUpdate(const FrameContext& ctx) { (void)ctx; }
 

@@ -223,4 +223,10 @@ struct PieLayout {
 [[nodiscard]] PieLayout computePieLayout(Vec2d canvasSize, const PieChartData& data,
                                          const PieLayoutOptions& options = {});
 
+/// 把一个扇区近似成多边形顶点（外弧 + 内弧，实心饼从圆心起）。
+/// SceneBuilder 建描述树和渲染层画扇形共用这一份，保证"描的"和"画的"是同一个形状。
+/// fullCircleSegments 是整圆细分数，单个扇区按弧长比例取用（至少 2 段）。
+[[nodiscard]] std::vector<Vec2d> sectorPolygon(const PieSector& sector, const PieLayout& layout,
+                                               int fullCircleSegments);
+
 }  // namespace kiriyama::core

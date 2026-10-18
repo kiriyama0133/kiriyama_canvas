@@ -9,7 +9,7 @@
 #   ./scripts/build.sh JetBrainsMono-Bold               # 换一支
 #   ./scripts/build.sh JetBrainsMono-Light fontawesome-webfont
 #   ./scripts/build.sh --all                            # public/ 下全部
-#   ./scripts/build.sh --release --test                 # 顺手跑单元测试
+#   ./scripts/build.sh --debug --test                   # Debug + 单元测试
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,7 +25,7 @@ BUILD_DIR="${ROOT}/build"
 DEFAULT_FONT="JetBrainsMono-Light"
 
 FONTS=()
-CONFIG="Debug"
+CONFIG="Release"
 WITH_TESTS=0
 CLEAN=0
 JOBS=""
@@ -42,8 +42,8 @@ usage() {
   scripts/build.sh --all                             public/ 下全部字体
 
 选项:
-  --release          Release 构建（默认 Debug）
-  --debug            Debug 构建
+  --release          Release 构建（默认；体积小、跑得快）
+  --debug            Debug 构建（带 DWARF + 断言，wasm 会大 7 倍）
   --test             同时构建并运行单元测试
   --clean            先删掉 build/ 再配置（会重新编译全部依赖，较慢）
   -j N, --jobs N     并行数

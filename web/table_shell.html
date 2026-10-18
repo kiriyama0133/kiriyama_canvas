@@ -106,10 +106,12 @@
   </div>
 
   <div class="notes">
-    <b>模型写在这个页面的 &lt;script&gt; 里</b>，不在 C++ 里。下面的 <code>TABLE_MODEL</code> 是列定义 +
-    42 行数据，加载完成后由 <code>encodeModel()</code> 编码成以 <code>U+001F</code> 分隔、<code>\n</code>
-    分行的文本，交给 wasm 导出的 <code>kiriyama_table_load</code>。换数据、加列、改数字格式只改这里，
-    不用重新编译。
+    <b>模型写在这个页面的 &lt;script&gt; 里</b>，不在 C++ 里。整页只有一件事要做：
+    把列定义 + 42 行数据挂到 <code>window.KIRIYAMA_TABLE_MODEL</code> 上。编码、跨语言调用、
+    时机全部由 <code>entry.js</code>（构建时用 <code>--post-js</code> 拼进 <code>table.js</code>）负责，
+    页面里看不到 <code>ccall</code>、看不到分隔符协议。运行时换数据只要
+    <code>Module.loadTable(model)</code>，也可以直接喂 JSON 文本。换数据 / 加列 / 改数字格式，
+    都不用重新编译。
     <br>
     组件本身不持有数据（<code>const TableData*</code> + 调用方给的 <code>dataVersion</code>），
     持有的是视图状态：排序键、选中行、滚动量。排序不重排数据，只重排
@@ -128,12 +130,13 @@
 </div>
 
 <script>
-  var UNIT = '\u001f';
-
   // ---------------------------------------------------------------- 模型
-  // type: text | number | int | bool | date
+  // 页面只做一件事：把数据挂到 KIRIYAMA_TABLE_MODEL 上。
+  // 编码和跨语言调用都在 table.js 里（web/kiriyama_table_api.js），这里看不到。
+  //
+  // type:   text | number | int | bool | date
   // format: 传给 snprintf。带 '+' 的列按符号上色（涨红跌绿）。
-  var TABLE_MODEL = {
+  window.KIRIYAMA_TABLE_MODEL = {
     columns: [
       { id: 'code',   title: 'CODE',    type: 'text' },
       { id: 'name',   title: 'NAME',    type: 'text' },
@@ -189,51 +192,21 @@
     ]
   };
 
-  // ---------------------------------------------------------------- 编码
-  // 行协议（见 src/app/TableDemo.cc 的 parseModel）：
-  //   C␟id␟title␟type␟width␟sortable␟format
-  //   R␟key␟cell…
-  // 用 U+001F 做分隔符，正常文本里不会出现，因此不需要转义。
-  function encodeModel(model) {
-    var lines = [];
-    model.columns.forEach(function (c) {
-      lines.push(['C', c.id, c.title, c.type || 'text', c.width == null ? 120 : c.width,
-                  c.sortable === false ? 0 : 1, c.format || ''].join(UNIT));
-    });
-    model.rows.forEach(function (r) {
-      var fields = ['R', r.key == null ? String(r.cells[0]) : r.key];
-      for (var i = 0; i < model.columns.length; i++) {
-        var v = r.cells[i];
-        fields.push(v === null || v === undefined ? '' : String(v));
-      }
-      lines.push(fields.join(UNIT));
-    });
-    return lines.join('\n');
-  }
+  // ---------------------------------------------------------------- 就这些
+  // 页面的全部职责：声明数据。编码、跨语言调用、时机都在 entry.js 里。
+  // 想运行时换数据：Module.loadTable(model) 或 Module.loadTable(jsonText)。
 
   var Module = {
     canvas: document.getElementById('canvas'),
     onRuntimeInitialized: function () {
       var el = document.getElementById('loading');
-      try {
-        // 唯一一次跨语言调用：把整份模型送进去。
-        Module.ccall('kiriyama_table_load', null, ['string'], [encodeModel(TABLE_MODEL)]);
-        if (el) { el.classList.add('hidden'); }
-      } catch (err) {
-        if (el) { el.textContent = '模型注入失败：' + err; }
-        throw err;
-      }
+      if (el) { el.classList.add('hidden'); }
     }
   };
   window.addEventListener('error', function (e) {
     var el = document.getElementById('loading');
     if (el) { el.textContent = '加载失败：' + (e.message || 'unknown error'); }
   });
-
-  // 方便在控制台里换一份数据试：改完调用一次即可。
-  window.reloadTable = function (model) {
-    Module.ccall('kiriyama_table_load', null, ['string'], [encodeModel(model || TABLE_MODEL)]);
-  };
 </script>
 {{{ SCRIPT }}}
 </body>

@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>kiriyama/canvas · Pie 组件</title>
+  <style>
+    :root {
+      --bg: #ECEBE7;
+      --card: #FFFFFF;
+      --border: #DEDCD4;
+      --ink: #2C2C2A;
+      --muted: #7A7A74;
+      --accent: #3E6DB5;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .page {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 20px 56px;
+      gap: 18px;
+    }
+
+    .masthead {
+      width: min(960px, 100%);
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .masthead h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+    }
+
+    .masthead .tag {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .stage {
+      position: relative;
+      width: min(960px, 100%);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: 0 1px 2px rgba(44, 44, 42, 0.04), 0 12px 32px rgba(44, 44, 42, 0.06);
+      overflow: hidden;
+    }
+
+    #canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 960 / 540;
+      background: #F7F7F5;
+    }
+
+    #loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      color: var(--muted);
+      background: #F7F7F5;
+      transition: opacity 0.25s ease;
+    }
+
+    #loading.hidden {
+      display: none;
+    }
+
+    .notes {
+      width: min(960px, 100%);
+      font-size: 12.5px;
+      line-height: 1.7;
+      color: var(--muted);
+    }
+
+    .notes code {
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 12px;
+      background: rgba(44, 44, 42, 0.06);
+      border-radius: 4px;
+      padding: 1px 5px;
+      color: var(--ink);
+    }
+
+    .notes b {
+      color: var(--ink);
+      font-weight: 600;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="page">
+    <div class="masthead">
+      <h1>kiriyama/canvas</h1>
+      <span class="tag">Pie 组件 · SDL3 + WebAssembly</span>
+    </div>
+
+    <div class="stage">
+      <!-- 2x 超采样：物理像素 1920x1080，SDL 逻辑空间仍是 960x540。
+         fillPolygon 走 SDL_RenderGeometry，没有 MSAA，1x 下多边形边缘一像素硬切；
+         2 倍分辨率下边缘采样密度翻倍，锯齿明显减轻。CSS 依旧按 960/540 缩放显示。 -->
+      <canvas id="canvas" width="1920" height="1080"></canvas>
+      <div id="loading">正在加载 wasm…</div>
+    </div>
+
+    <div class="notes">
+      <b>模型写在这个页面的 &lt;script&gt; 里</b>，和表格同一套约定：把
+      <code>{ slices: [{ label, value }, …] }</code> 挂到
+      <code>window.KIRIYAMA_PIE_MODEL</code> 上。编码、跨语言调用、时机全部由
+      <code>entry.js</code>（构建时用 <code>--post-js</code> 拼进 <code>pie.js</code>，和
+      <code>table.js</code> 共用一份胶水）负责。运行时换数据只要
+      <code>Module.loadPie(model)</code>。0 / 负数 / NaN 的片不画、不参与占比。
+      <br>
+      <b>三层策略</b>：<code>scene::TooltipTarget</code>（气泡内容与开关）→
+      <code>scene::PieSlice</code>（一个扇区：极坐标命中 + hover 外扩 + 默认气泡）→
+      <code>scene::PieChart</code>（数据指针 + <code>core::computePieLayout</code> +
+      每个可用扇区一个子节点）。命中是精确的半径 + 角度判定（覆盖
+      <code>Widget::hitShape()</code>），不是外接框——所以扇形之间的空隙点不到，
+      甜甜圈的内孔也点不到。
+      <br>
+      <b>hover</b>：扇区外半径沿径向平滑放大（角度边界不动，相邻扇区不露底、不闪白），
+      气泡贴在扇区中径点上。默认气泡是 <code>label · 数值 · 占比%</code>；定制从低到高三个入口：
+      <code>setTooltipContent()</code> 设静态内容、继承覆盖 <code>tooltipContent()</code>
+      按数据生成、<code>TooltipHost::setResolver()</code> 完全接管。
+      <br>
+      <b>数据与样式都来自本页</b>：<code>slices</code> 给数据、<code>options</code> 给外观
+      （字号 / 颜色 / 外扩 / 甜甜圈…，见上方 <code>options</code> 注释）。运行时
+      <code>Module.loadPie({ slices, options })</code> 热替换，不用重新编译。
+    </div>
+  </div>
+
+  <script>
+    // ---------------------------------------------------------------- 模型
+    // 页面只做一件事：把数据挂到 KIRIYAMA_PIE_MODEL 上。
+    // value 为 0 / 负数 / NaN 的片会被跳过（不画、不参与占比）。
+    //
+    // options（全部可选，缺省用组件默认值）：
+    //   labelFontSize  标签字号（默认 12.5）
+    //   labelColor     标签颜色 '#RRGGBB'
+    //   showLabels     是否画外侧标签（默认 true）
+    //   showValues     标签里是否带百分比（默认 true）
+    //   gapWidth       扇区缝隙描边宽度（默认 0 = 关。hover 时缝隙线会跟着动，
+    //                  在相邻扇区边缘扫出底色残影，静态图才建议开）
+    //   gapColor       缝隙颜色 '#RRGGBB' 或 'none'
+    //   explode        hover 时扇区外半径放大的像素数（默认 6，0 = 关）
+    //   innerRadius    0..0.95，>0 即甜甜圈（默认 0）
+    //   startAngle     起始角，度，12 点方向 = -90（默认 -90）
+    //   labelOffset    标签锚点离外圆的距离（默认 10）
+    window.KIRIYAMA_PIE_MODEL = {
+      slices: [
+        { label: 'Technology', value: 38.6 },
+        { label: 'Consumer', value: 21.4 },
+        { label: 'Financials', value: 16.8 },
+        { label: 'Healthcare', value: 12.5 },
+        { label: 'Energy', value: 6.2 },
+        { label: 'Industrials', value: 4.5 }
+      ],
+      options: {
+        labelFontSize: 14,
+        labelColor: '#3A3A38',
+        explode: 8
+      }
+    };
+
+    // ---------------------------------------------------------------- 就这些
+    // 页面的全部职责：声明数据。编码、跨语言调用、时机都在 entry.js 里。
+    // 想运行时换数据：Module.loadPie(model) 或 Module.loadPie(jsonText)。
+    // 换配置也一样：Module.loadPie({ slices: [...], options: {...} })。
+
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    onRuntimeInitialized: function () {
+      var el = document.getElementById('loading');
+      if (el) { el.classList.add('hidden'); }
+    },
+    // wasm 下载 / 实例化失败（file:// 直接打开、网络错误、内存不足）。
+    // 没有这个钩子时页面只会永远停在"正在加载 wasm…"，看不出原因。
+    onAbort: function (what) {
+      var el = document.getElementById('loading');
+      if (el) {
+        el.classList.remove('hidden');
+        el.innerHTML = '加载失败：' + what +
+          '<br>请用本地 http 服务打开（python -m http.server 8765 --directory web），' +
+          'file:// 直开会被浏览器拦掉 wasm。';
+      }
+    }
+  };
+  window.addEventListener('error', function (e) {
+    var el = document.getElementById('loading');
+    if (el) { el.textContent = '加载失败：' + (e.message || 'unknown error'); }
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    var el = document.getElementById('loading');
+    if (el) {
+      el.textContent = '加载失败：' + (e.reason && e.reason.message || e.reason || 'unknown') +
+        '（请确认 pie.js / pie.wasm / pie.data 与本页面在同一目录）';
+    }
+  });
+  </script>
+
+  <!-- wasm 产物：pie.js（已含 entry.js 胶水）+ pie.wasm + pie.data，与本页面同目录。
+       本页面就是交付页：改 model / options 只动上面那段 script。 -->
+  <script src="pie.js"></script>
+</body>
+
+</html>

@@ -54,8 +54,8 @@ function Show-Usage {
   .\scripts\build.ps1 --all                             public/ 下全部字体
 
 选项:
-  --release          Release 构建（默认 Debug）
-  --debug            Debug 构建
+  --release          Release 构建（默认；体积小、跑得快）
+  --debug            Debug 构建（带 DWARF + 断言，wasm 会大 7 倍）
   --test             同时构建并运行单元测试
   --clean            先删掉 build/ 再配置（会重新编译全部依赖，较慢）
   -j N, --jobs N     并行数
@@ -66,7 +66,8 @@ function Show-Usage {
 # ---------------------------------------------------------------- 参数解析
 $fonts = @()
 $All = $false
-$Release = $false
+# 默认 Release：Debug 会带 DWARF 和断言，wasm 体积差 7 倍。
+$Config = 'Release'
 $DoTest = $false
 $Clean = $false
 $Jobs = 0
@@ -81,9 +82,9 @@ for ($i = 0; $i -lt $ArgList.Count; ++$i) {
     if ($flag -match '^(all)$') {
         $All = $true
     } elseif ($flag -match '^(release)$') {
-        $Release = $true
+        $Config = 'Release'
     } elseif ($flag -match '^(debug)$') {
-        $Release = $false
+        $Config = 'Debug'
     } elseif ($flag -match '^(test|t)$') {
         $DoTest = $true
     } elseif ($flag -match '^(clean)$') {
@@ -108,7 +109,6 @@ for ($i = 0; $i -lt $ArgList.Count; ++$i) {
 $Root = Split-Path -Parent $PSScriptRoot
 $BuildDir = Join-Path $Root 'build'
 $DefaultFont = 'JetBrainsMono-Light'
-$Config = if ($Release) { 'Release' } else { 'Debug' }
 
 if ($All) { $fonts = @('all') }
 if ($fonts.Count -eq 0) { $fonts = @($DefaultFont) }
@@ -194,7 +194,7 @@ Write-Host "==> 字体: $selection  ($Config)"
 if ($LASTEXITCODE -ne 0) { throw "cmake 配置失败（退出码 $LASTEXITCODE）。" }
 
 # ---------------------------------------------------------------- 构建
-$targets = @('kiriyama_text_demo', 'kiriyama_table_demo')
+$targets = @('kiriyama_text_demo', 'kiriyama_table_demo', 'kiriyama_pie_demo')
 if ($DoTest) { $targets += 'kiriyama_text_tests' }
 
 $buildArgs = @('--build', $BuildDir, '--target') + $targets

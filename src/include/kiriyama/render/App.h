@@ -59,6 +59,13 @@ struct AppConfig {
     /// 垂直同步。web 上开启即跟随浏览器刷新率。
     bool vsync{true};
 
+    /// 高分屏超采样（SDL_WINDOW_HIGH_PIXEL_DENSITY）。
+    /// 不开：canvas 物理像素 = CSS 像素，SDL_RenderGeometry 又没有 MSAA，
+    /// 多边形边缘（饼图扇形 / 圆）在高分屏上是 1 像素硬切的锯齿。
+    /// 开：canvas 物理像素 = CSS × devicePixelRatio，几何按物理像素光栅化，
+    /// 边缘平滑一倍以上；文字纹理仍按逻辑字号光栅化后放大（略软，后续再做 DPI 感知）。
+    bool highPixelDensity{false};
+
     SDL_WindowFlags windowFlags{SDL_WINDOW_RESIZABLE};
 };
 

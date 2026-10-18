@@ -62,8 +62,12 @@ bool App::start() {
         ttfReady_ = true;
     }
 
+    // highPixelDensity 必须在创建时生效（emscripten 后端按它决定 canvas 是否乘 DPR）。
+    const SDL_WindowFlags flags = config_.highPixelDensity
+        ? SDL_WindowFlags(config_.windowFlags | SDL_WINDOW_HIGH_PIXEL_DENSITY)
+        : config_.windowFlags;
     if (!SDL_CreateWindowAndRenderer(config_.title.c_str(), config_.windowWidth,
-                                     config_.windowHeight, config_.windowFlags, &window_,
+                                     config_.windowHeight, flags, &window_,
                                      &renderer_)) {
         SDL_Log("kiriyama: 创建窗口/渲染器失败: %s", SDL_GetError());
         stop();

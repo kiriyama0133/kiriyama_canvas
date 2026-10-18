@@ -3,8 +3,10 @@ add_executable(kiriyama_text_tests
     AppTest.cc
     DragTest.cc
     PainterTest.cc
+    PieChartTest.cc
     TextLayoutTest.cc
     TtfFontTest.cc
+    TooltipTargetTest.cc
     WidgetTest.cc
 )
 
