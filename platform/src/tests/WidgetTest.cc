@@ -199,4 +199,26 @@ TEST(Widget, TickTreeUpdatesNestedWidgets) {
     EXPECT_TRUE(childRaw->pointerInside());
 }
 
+TEST(Widget, BorderAndShadowConfiguration) {
+    Probe widget("card");
+    widget.setFrame(RectD{0.0, 0.0, 200.0, 100.0});
+    EXPECT_FALSE(widget.style().hasStroke());
+    EXPECT_FALSE(widget.style().hasShadow());
+
+    widget.setBorder(kiriyama::core::Color::Hex(0x3E6DB5), 2.0, 8.0)
+        .setShadow(kiriyama::core::Color::Rgba(0.0, 0.0, 0.0, 0.25), Vec2d{0.0, 6.0}, 12.0, 1.0);
+
+    EXPECT_TRUE(widget.style().hasStroke());
+    EXPECT_DOUBLE_EQ(widget.style().strokeWidth, 2.0);
+    EXPECT_DOUBLE_EQ(widget.cornerRadius(), 8.0);
+    EXPECT_TRUE(widget.style().hasShadow());
+    EXPECT_DOUBLE_EQ(widget.shadow().offset.y, 6.0);
+    EXPECT_DOUBLE_EQ(widget.shadow().blur, 12.0);
+    EXPECT_DOUBLE_EQ(widget.shadow().spread, 1.0);
+
+    widget.clearBorder().clearShadow();
+    EXPECT_FALSE(widget.style().hasStroke());
+    EXPECT_FALSE(widget.style().hasShadow());
+}
+
 }  // namespace

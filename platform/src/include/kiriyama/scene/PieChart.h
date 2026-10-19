@@ -100,6 +100,7 @@ protected:
 private:
     void rebuild();
     void updateHoverAndExplode(const FrameContext& ctx);
+    [[nodiscard]] std::size_t pickSector(const Vec2d& worldPoint) const noexcept;
     /// 把扇区 i 的多边形写成"外半径 + radius"的版本（radius 0 = 基准几何）。
     void applyExplode(std::size_t index, double radius);
     [[nodiscard]] core::SceneBuildOptions buildOptions() const;
@@ -125,11 +126,9 @@ private:
     core::TextMeasureFn textMeasure_{};
 
     core::PieLayout layout_{};
-    core::RectD lastFrame_{};
+    core::Vec2d lastSize_{};
 
-    /// 两层结构：plot 组持 frame 平移（组件自己写），inner 组是对账目标
-    /// （reconcile 会同步目标根的 key / transform，所以平移必须放在它之上）。
-    core::SceneNode* plot_{nullptr};
+    /// 对账目标组（直接挂在组件自身之下，位置平移由组件自身的 transform_ 承担）。
     core::SceneNode* inner_{nullptr};
     /// 对账后收集的扇区节点（key slice.<i>），外扩动画原地改它们的 points。
     std::vector<core::SceneNode*> sliceNodes_{};

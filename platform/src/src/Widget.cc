@@ -37,6 +37,54 @@ void tickSubtree(SceneNode& node, const FrameContext& ctx);
 
 Widget::Widget(std::string key) : SceneNode(core::NodeType::Group, std::move(key)) {}
 
+// ---------------------------------------------------------------- 边框与阴影
+
+Widget& Widget::setCornerRadius(double radius) noexcept {
+    core::SceneStyle next = style();
+    next.cornerRadius = std::max(0.0, radius);
+    setStyle(next);
+    return *this;
+}
+
+Widget& Widget::setBorder(const core::Paint& color, double width, double cornerRadius) noexcept {
+    core::SceneStyle next = style();
+    next.stroke = color;
+    next.strokeWidth = std::max(0.0, width);
+    if (cornerRadius >= 0.0) {
+        next.cornerRadius = cornerRadius;
+    }
+    setStyle(next);
+    return *this;
+}
+
+Widget& Widget::clearBorder() noexcept {
+    core::SceneStyle next = style();
+    next.stroke = core::Paint{};
+    next.strokeWidth = 0.0;
+    setStyle(next);
+    return *this;
+}
+
+Widget& Widget::setShadow(const core::BoxShadow& shadow) noexcept {
+    core::SceneStyle next = style();
+    next.shadow = shadow;
+    next.shadow.blur = std::max(0.0, next.shadow.blur);
+    setStyle(next);
+    return *this;
+}
+
+Widget& Widget::setShadow(const core::Paint& color, const Vec2d& offset, double blur,
+                          double spread) noexcept {
+    return setShadow(core::BoxShadow{color, offset, std::max(0.0, blur), spread});
+}
+
+Widget& Widget::clearShadow() noexcept {
+    core::SceneStyle next = style();
+    next.shadow = core::BoxShadow{};
+    setStyle(next);
+    return *this;
+}
+
 // ---------------------------------------------------------------- 命中区
 
 RectD Widget::localHitArea() const noexcept {

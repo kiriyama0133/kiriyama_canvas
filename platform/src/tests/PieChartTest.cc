@@ -114,19 +114,19 @@ TEST(PieChart, RelayoutsWhenFrameChanges) {
     auto chart = fourSliceChart();
     ASSERT_EQ(chart->sliceCount(), 4u);
     EXPECT_DOUBLE_EQ(chart->layout().center.x, 100.0);
+    const std::uint64_t idBefore = sliceNode(*chart, 0)->id();
 
     chart->setFrame(RectD{100.0, 50.0, 200.0, 200.0});
     chart->tickTree(at(-1.0, -1.0));
 
-    // 布局是 frame 相对坐标（尺寸不变 → 圆心还是 100,100），
-    // 真正变化的是 plot 组的平移（描述树整体搬到新 frame 的位置）。
+    // 布局是组件局部坐标（尺寸不变 → 圆心还是 100,100），
+    // 位置变化收敛到组件自身的 transform_ 上，不再需要中间 plot 组，也不触发重建。
     EXPECT_DOUBLE_EQ(chart->layout().center.x, 100.0);
     EXPECT_DOUBLE_EQ(chart->layout().center.y, 100.0);
-    ASSERT_FALSE(chart->children().empty());
-    const SceneNode& plot = *chart->children().front();
-    const Vec2d moved = plot.transform().apply(Vec2d{0.0, 0.0});
+    const Vec2d moved = chart->transform().apply(Vec2d{0.0, 0.0});
     EXPECT_DOUBLE_EQ(moved.x, 100.0);
     EXPECT_DOUBLE_EQ(moved.y, 50.0);
+    EXPECT_EQ(sliceNode(*chart, 0)->id(), idBefore);
 }
 
 TEST(PieChart, ClearDataClearsSlices) {
@@ -172,7 +172,7 @@ TEST(PieChart, PaletteAppliesOnRebuild) {
     EXPECT_EQ(slice->style().fill.token, ColorToken::Series);
     EXPECT_EQ(slice->style().fill.seriesIndex, 0u);
 
-    const SceneNode* inner = chart->children().front()->children().front().get();
+    const SceneNode* inner = chart->children().front().get();
     ASSERT_NE(inner, nullptr);
     ASSERT_TRUE(inner->style().seriesPalette);
     ASSERT_FALSE(inner->style().seriesPalette->empty());

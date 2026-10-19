@@ -38,7 +38,6 @@ add_library(kiriyama_render STATIC
     src/Painter.cc
     src/SceneDraw.cc
     src/SdlColor.cc
-    src/SparkBarRenderer.cc
     src/TextRenderer.cc
     src/TooltipHost.cc
     src/TooltipRenderer.cc

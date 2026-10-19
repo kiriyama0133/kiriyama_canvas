@@ -86,6 +86,48 @@ void restoreClip(Painter& painter, bool clipped, const SDL_Rect& saved) {
     }
 }
 
+/// 绘制盒阴影：SDL 无硬件高斯模糊，按 blur/spread 分三层递减 alpha 的圆角矩形包络近似柔光。
+void drawBoxShadow(Painter& painter, const RectD& frame, double cornerRadius,
+                   const core::BoxShadow& shadow, double effectiveOpacity,
+                   const core::ChartTheme& theme,
+                   const std::vector<core::Color>* seriesPalette) {
+    if (frame.empty() || !shadow.visible()) {
+        return;
+    }
+    const core::Color color = shadow.color.resolve(theme, seriesPalette);
+    if (!color.visible()) {
+        return;
+    }
+
+    const double spread = shadow.spread;
+    const RectD base{frame.x + shadow.offset.x - spread,
+                     frame.y + shadow.offset.y - spread,
+                     frame.width + spread * 2.0,
+                     frame.height + spread * 2.0};
+    if (base.empty()) {
+        return;
+    }
+    const double baseRadius = std::max(0.0, cornerRadius + spread);
+
+    if (shadow.blur <= 0.5) {
+        painter.color(color, effectiveOpacity).fillRoundRect(base, baseRadius);
+        return;
+    }
+
+    // 三层柔化包络：越往外扩散越大、透明度越低
+    constexpr double kExpandFactors[3] = {0.15, 0.45, 0.85};
+    constexpr double kAlphaWeights[3] = {0.50, 0.32, 0.18};
+    for (int i = 0; i < 3; ++i) {
+        const double expand = shadow.blur * kExpandFactors[i];
+        const RectD layer{base.x - expand, base.y - expand,
+                          base.width + expand * 2.0, base.height + expand * 2.0};
+        if (!layer.empty()) {
+            painter.color(color, effectiveOpacity * kAlphaWeights[i])
+                .fillRoundRect(layer, baseRadius + expand);
+        }
+    }
+}
+
 void drawNode(Painter& painter, const SceneNode& node, const Affine2D& parentWorld,
               double parentOpacity, const core::ChartTheme& theme,
               const std::vector<core::Color>* seriesPalette) {
@@ -111,6 +153,16 @@ void drawNode(Painter& painter, const SceneNode& node, const Affine2D& parentWor
     const Affine2D world = parentWorld * node.transform();
 
     const double savedOpacity = painter.opacity();
+
+    // Widget（NodeType::Group）或 Rect 若配置了盒阴影，在裁剪之前先往外投射阴影
+    // （避免组件开启内部滚动裁剪时把自己的外阴影一刀切掉）。
+    if ((node.type() == NodeType::Rect || node.type() == NodeType::Group) &&
+        style.hasShadow() && !node.frame().empty()) {
+        const RectD worldFrame = transformedRect(world, node.frame());
+        drawBoxShadow(painter, worldFrame, style.cornerRadius, style.shadow,
+                      savedOpacity * effective, theme, palette);
+    }
+
     painter.opacity(savedOpacity * effective);
 
     // 裁剪：描述树用 clipRect 表达"只露出这一块"（滚动视口）。
@@ -171,15 +223,32 @@ void drawNode(Painter& painter, const SceneNode& node, const Affine2D& parentWor
             }
             break;
         }
-        case NodeType::Group:
+        case NodeType::Group: {
+            // Widget 容器若设置了背景填充，在子树之前铺底
+            if (!node.frame().empty() && fill.visible()) {
+                const RectD frame = transformedRect(world, node.frame());
+                painter.color(fill).fillRoundRect(frame, style.cornerRadius);
+            }
+            break;
+        }
         case NodeType::Text:
-            break;  // Group 无自身图元；Text 归 SdlTextRenderer::drawScene
+            break;  // Text 归 SdlTextRenderer::drawScene
     }
 
     for (const auto& child : node.children()) {
         if (child != nullptr) {
             drawNode(painter, *child, world, effective, theme, palette);
         }
+    }
+
+    // Widget（NodeType::Group）若设置了外边框，在子树绘制完毕后压在最上层收口
+    if (node.type() == NodeType::Group && !node.frame().empty() &&
+        stroke.visible() && style.strokeWidth > 0.0) {
+        const RectD frame = transformedRect(world, node.frame());
+        painter.opacity(savedOpacity * effective)
+            .color(stroke)
+            .strokeWidth(style.strokeWidth)
+            .strokeRoundRect(frame, style.cornerRadius);
     }
 
     restoreClip(painter, clipped, savedClip);

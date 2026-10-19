@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "Color.h"
+#include "Geometry.h"
 #include "Theme.h"
 
 namespace kiriyama::core {
@@ -35,6 +36,22 @@ enum class CursorShape : std::uint8_t {
     NotAllowed,
 };
 
+/// 盒阴影（用于 Widget 容器与 Rect 图元）。
+/// SDL 无硬件高斯模糊，渲染层按 blur/spread 用多层半透明圆角矩形包络近似柔光阴影。
+struct BoxShadow {
+    Paint color{};          ///< 阴影颜色（或语义 token）；不可见时不绘制
+    Vec2d offset{0.0, 4.0}; ///< 阴影相对原框的像素偏移
+    double blur{8.0};       ///< 柔化半径（>= 0）
+    double spread{0.0};     ///< 外扩尺寸（正值外扩，负值内缩）
+
+    [[nodiscard]] constexpr bool visible() const noexcept {
+        return color.visible() &&
+               (blur > 0.0 || spread > 0.0 || offset.x != 0.0 || offset.y != 0.0);
+    }
+
+    [[nodiscard]] constexpr bool operator==(const BoxShadow&) const noexcept = default;
+};
+
 struct SceneStyle {
     /// 语义 token 或直接色（见 Theme.h）。token != None 时渲染层用当前主题解析，
     /// 所以切主题不需要重建场景树；直接色用于表格样式、组件自定义色这类
@@ -43,7 +60,8 @@ struct SceneStyle {
     Paint stroke{};
     double strokeWidth{0.0};
     double opacity{1.0};         ///< 作用于整棵子树
-    double cornerRadius{0.0};    ///< 仅 Rect
+    double cornerRadius{0.0};    ///< Rect / Widget 容器圆角
+    BoxShadow shadow{};          ///< 盒阴影（Widget / Rect）
     double fontSize{12.0};       ///< 仅 Text
     double lineHeight{0.0};      ///< 仅 Text，0 表示按 fontSize 推算
     TextAlign textAlign{TextAlign::Left};
@@ -62,6 +80,7 @@ struct SceneStyle {
     [[nodiscard]] constexpr bool hasStroke() const noexcept {
         return stroke.visible() && strokeWidth > 0.0;
     }
+    [[nodiscard]] constexpr bool hasShadow() const noexcept { return shadow.visible(); }
 
     [[nodiscard]] constexpr bool operator==(const SceneStyle&) const noexcept = default;
 };

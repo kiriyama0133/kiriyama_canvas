@@ -71,6 +71,25 @@ public:
     void capturePointer(bool capture) noexcept { captured_ = capture; }
     [[nodiscard]] bool hasPointerCapture() const noexcept { return captured_; }
 
+    // ------------------------------------------------------------ 边框与阴影（容器外观）
+    //
+    // Widget 持有自身的局部矩形 frame()，因此盒阴影、外边框与圆角统一由 Widget 管理：
+    // 数据落在 SceneNode::style() 上，渲染层（SceneDraw）在绘制子树前后自动落笔，
+    // Animation 子类也能直接用同一套轨道做平滑过渡。
+
+    Widget& setCornerRadius(double radius) noexcept;
+    [[nodiscard]] double cornerRadius() const noexcept { return style().cornerRadius; }
+
+    Widget& setBorder(const core::Paint& color, double width = 1.0,
+                      double cornerRadius = -1.0) noexcept;
+    Widget& clearBorder() noexcept;
+
+    Widget& setShadow(const core::BoxShadow& shadow) noexcept;
+    Widget& setShadow(const core::Paint& color, const Vec2d& offset = {0.0, 4.0},
+                      double blur = 8.0, double spread = 0.0) noexcept;
+    Widget& clearShadow() noexcept;
+    [[nodiscard]] const core::BoxShadow& shadow() const noexcept { return style().shadow; }
+
     // ------------------------------------------------------------ 命中区
 
     /// 世界坐标下的命中矩形（AABB）。默认取 frame，frame 为空则取子树包围盒。

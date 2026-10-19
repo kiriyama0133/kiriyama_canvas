@@ -108,14 +108,8 @@ void TableWidget::setData(const core::TableData& data) {
 
 // ---------------------------------------------------------------- 排版
 
-Vec2d TableWidget::origin() const noexcept {
-    const RectD box = frame();
-    return Vec2d{box.x, box.y};
-}
-
 Vec2d TableWidget::localPoint(const Vec2d& worldPoint) const noexcept {
-    const Vec2d o = origin();
-    return Vec2d{worldPoint.x - o.x, worldPoint.y - o.y};
+    return toLocal(worldPoint) - frame().origin();
 }
 
 void TableWidget::relayout() {
@@ -299,7 +293,18 @@ CursorShape TableWidget::cursorAt(const Vec2d& worldPoint) const noexcept {
 
 void TableWidget::onUpdate(const FrameContext& ctx) {
     (void)ctx;
-    relayout();
+    if (frame().x != 0.0 || frame().y != 0.0) {
+        setTranslation(frame().origin());
+        setFrame({0.0, 0.0, frame().width, frame().height});
+    }
+    if (!(frame().size() == lastSize_)) {
+        lastSize_ = frame().size();
+        widthsDirty_ = true;
+        markSceneDirty();
+    }
+    if (widthsDirty_ || sceneDirty_ || scroll_ != lastScroll_) {
+        relayout();
+    }
 
     hoverPos_ = -1;
     if (pointerInside()) {
@@ -361,20 +366,11 @@ void TableWidget::onRelease(bool inside) {
 // ---------------------------------------------------------------- 描述树
 
 SceneNode* TableWidget::plotGroup() {
-    if (plot_ == nullptr) {
-        auto plot = std::make_unique<SceneNode>(core::NodeType::Group, "plot");
-        plot_ = plot.get();
-        appendChild(std::move(plot));
-    }
-    // 描述树以卡片左上角为原点；平移放 plot 组（组件自己写，不参与对账）。
-    plot_->setTranslation(frame().origin());
-
-    // 对账目标再下沉一层：reconcileNode 会同步目标根的 transform（抹成
-    // 描述树的 identity），平移放在对账层之上才不会被抹掉。
+    // 组件自身持 transform_ 承担位置平移，inner_ 直接挂在组件下作为对账目标。
     if (inner_ == nullptr) {
-        auto inner = std::make_unique<SceneNode>(core::NodeType::Group, "scene");
+        auto inner = std::make_unique<SceneNode>(core::NodeType::Group, "table");
         inner_ = inner.get();
-        plot_->appendChild(std::move(inner));
+        appendChild(std::move(inner));
     }
     return inner_;
 }

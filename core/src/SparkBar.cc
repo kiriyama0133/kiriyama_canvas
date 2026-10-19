@@ -57,66 +57,158 @@ SparkBarLayout computeSparkBarLayout(Vec2d size, const SparkBarData& data,
     }
 
     const std::size_t count = data.tagCount();
+    const double fontSize = options.tagFontSize > 0.0 ? options.tagFontSize : 12.0;
     const double tagHeight =
-        options.showTags ? (options.tagHeight > 0.0 ? options.tagHeight : options.tagFontSize * 1.5)
-                         : 0.0;
-    const double tagBlock = tagHeight > 0.0 ? tagHeight + options.tagGap : 0.0;
+        options.showTags ? (options.tagHeight > 0.0 ? options.tagHeight : fontSize * 1.5) : 0.0;
+    const double tagBlock = options.showTags ? (tagHeight + options.tagGap) : 0.0;
 
-    // 柱子能用的高度。
-    const double plotHeight =
-        std::max(0.0, canvasHeight - tagBlock) * math::saturate(options.heightRatio);
-
-    // 柱宽：显式给了就用，否则均分（至少留 1px，避免除零）。
-    double barWidth = options.barWidth;
-    if (!(barWidth > 0.0)) {
-        const double gaps = options.barGap * static_cast<double>(count > 0 ? count - 1 : 0);
-        barWidth = std::max(1.0, (canvasWidth - gaps) / static_cast<double>(count));
+    // 统计全局各语言（series）总量，用来排底部 GitHub 风格圆点图例。
+    std::vector<double> seriesTotals(data.seriesCount(), 0.0);
+    double grandTotal = 0.0;
+    std::size_t activeSeriesCount = 0;
+    for (std::size_t s = 0; s < data.seriesCount(); ++s) {
+        double sum = 0.0;
+        for (std::size_t t = 0; t < count; ++t) {
+            sum += data.valueAt(t, s);
+        }
+        seriesTotals[s] = sum;
+        grandTotal += sum;
+        if (sum > 0.0) {
+            ++activeSeriesCount;
+        }
     }
-    const double pitch = barWidth + options.barGap;
 
-    // 整体水平居中（柱宽固定、画布更宽时）。
-    const double contentWidth = pitch * static_cast<double>(count) - options.barGap;
-    const double startX = std::max(0.0, (canvasWidth - contentWidth) * 0.5);
+    // 预估底部图例所需高度（showTags 开启且有正值系列时显示）。
+    const double legendRowHeight = fontSize * 1.6;
+    const double legendRowGap = 6.0;
+    const double legendTopGap = options.showTags && activeSeriesCount > 0 ? 18.0 : 0.0;
+    double estimatedLegendHeight = 0.0;
+    if (options.showTags && activeSeriesCount > 0) {
+        double cursorX = 0.0;
+        int legendRows = 1;
+        for (std::size_t s = 0; s < data.seriesCount(); ++s) {
+            if (!(seriesTotals[s] > 0.0)) {
+                continue;
+            }
+            const double nameWidth =
+                static_cast<double>(data.series[s].name.size()) * fontSize * 0.58;
+            const double itemWidth = 10.0 + 6.0 + nameWidth + fontSize * 3.8 + 22.0;
+            if (cursorX > 0.0 && cursorX + itemWidth > canvasWidth) {
+                ++legendRows;
+                cursorX = 0.0;
+            }
+            cursorX += itemWidth;
+        }
+        estimatedLegendHeight =
+            legendTopGap + static_cast<double>(legendRows) * legendRowHeight +
+            static_cast<double>(legendRows - 1) * legendRowGap;
+    }
 
-    const double maxTotal = data.maxTotal();
-    const double unit = maxTotal > 0.0 ? plotHeight / maxTotal : 0.0;
-    const double baseY = plotHeight;  // 基线（自下而上堆叠）
+    const double usableHeight =
+        std::max(0.0, canvasHeight - estimatedLegendHeight) * math::saturate(options.heightRatio);
+    const double totalBarGaps = options.barGap * static_cast<double>(count > 0 ? count - 1 : 0);
+    const double totalTagBlocks = tagBlock * static_cast<double>(count);
+
+    // 横向条厚度（高度）：显式给了 barWidth 就用，否则按可用高度自适应。
+    double barThickness = options.barWidth;
+    if (!(barThickness > 0.0)) {
+        const double raw =
+            (usableHeight - totalBarGaps - totalTagBlocks) / static_cast<double>(count);
+        barThickness = options.showTags ? std::clamp(raw, 10.0, 22.0) : std::max(1.0, raw);
+    }
+
+    const double rowPitch = tagBlock + barThickness + options.barGap;
+    const double barsContentHeight =
+        rowPitch * static_cast<double>(count) - options.barGap + estimatedLegendHeight;
+    const double startY = std::max(0.0, (canvasHeight - barsContentHeight) * 0.5);
 
     for (std::size_t t = 0; t < count; ++t) {
         SparkBarItem item;
         item.tagIndex = t;
 
-        const double x = startX + pitch * static_cast<double>(t);
-        const double total = data.totalAt(t);
-        const double barHeight = total * unit;
-
-        item.barRect = RectD{x, baseY - barHeight, barWidth, barHeight};
+        const double rowTop = startY + rowPitch * static_cast<double>(t);
         if (options.showTags) {
-            item.tagRect = RectD{x, baseY + options.tagGap, barWidth, tagHeight};
+            item.tagRect = RectD{0.0, rowTop, canvasWidth, tagHeight};
         }
+        const double barTop = rowTop + tagBlock;
+        const double total = data.totalAt(t);
 
-        // 自下而上堆叠：先画的在底部，段之间留 segmentGap 的缝。
-        double cursor = baseY;
-        for (std::size_t s = 0; s < data.seriesCount(); ++s) {
-            const double value = data.valueAt(t, s);
-            if (!(value > 0.0)) {
-                continue;
+        if (total > 0.0) {
+            item.barRect = RectD{0.0, barTop, canvasWidth, barThickness};
+
+            // 找出本行最后一个有效 series，末段右侧直接贴齐画布右边缘，不留尾巴缝隙。
+            std::size_t lastValidSeries = 0;
+            for (std::size_t s = 0; s < data.seriesCount(); ++s) {
+                if (data.valueAt(t, s) > 0.0) {
+                    lastValidSeries = s;
+                }
             }
-            const double rawHeight = value * unit;
-            // 缝隙从段底扣掉，但保证每段至少 1px，否则细段会消失。
-            const double gap = rawHeight > options.segmentGap + 1.0 ? options.segmentGap : 0.0;
-            const double height = std::max(1.0, rawHeight - gap);
 
-            SparkBarSegment segment;
-            segment.value = value;
-            segment.seriesIndex = s;
-            segment.rect = RectD{x, cursor - height, barWidth, height};
-            item.segments.push_back(segment);
+            // 自左向右按占比堆叠，相邻段之间留 segmentGap 缝隙。
+            double cursorX = 0.0;
+            for (std::size_t s = 0; s < data.seriesCount(); ++s) {
+                const double value = data.valueAt(t, s);
+                if (!(value > 0.0)) {
+                    continue;
+                }
+                const double fraction = value / total;
+                const double rawWidth = fraction * canvasWidth;
+                const bool isLast = (s == lastValidSeries);
+                const double gap =
+                    (!isLast && rawWidth > options.segmentGap + 1.0) ? options.segmentGap : 0.0;
+                const double width = isLast ? std::max(1.0, canvasWidth - cursorX)
+                                            : std::max(1.0, rawWidth - gap);
 
-            cursor -= rawHeight;
+                SparkBarSegment segment;
+                segment.value = value;
+                segment.fraction = fraction;
+                segment.seriesIndex = s;
+                segment.rect = RectD{cursorX, barTop, width, barThickness};
+                item.segments.push_back(segment);
+
+                cursorX += rawWidth;
+            }
         }
 
         layout.items.push_back(std::move(item));
+    }
+
+    // 底部 GitHub 风格语言占比图例：● C++ 68.4%   ● JavaScript 15.2% ...
+    if (options.showTags && grandTotal > 0.0) {
+        const double dotSize = std::clamp(fontSize * 0.78, 8.0, 12.0);
+        double cursorX = 0.0;
+        double cursorY =
+            startY + rowPitch * static_cast<double>(count) - options.barGap + legendTopGap;
+
+        for (std::size_t s = 0; s < data.seriesCount(); ++s) {
+            const double sum = seriesTotals[s];
+            if (!(sum > 0.0)) {
+                continue;
+            }
+            const double fraction = sum / grandTotal;
+            const double nameWidth =
+                static_cast<double>(data.series[s].name.size()) * fontSize * 0.58;
+            const double textWidth = std::max(36.0, nameWidth + fontSize * 3.8);
+            const double itemWidth = dotSize + 6.0 + textWidth;
+
+            if (cursorX > 0.0 && cursorX + itemWidth > canvasWidth) {
+                cursorX = 0.0;
+                cursorY += legendRowHeight + legendRowGap;
+            }
+
+            SparkBarLegendItem legendItem;
+            legendItem.seriesIndex = s;
+            legendItem.value = sum;
+            legendItem.fraction = fraction;
+            legendItem.dotRect =
+                RectD{cursorX, cursorY + (legendRowHeight - dotSize) * 0.5, dotSize, dotSize};
+            legendItem.textRect =
+                RectD{cursorX + dotSize + 6.0, cursorY, textWidth, legendRowHeight};
+            legendItem.hitRect = RectD{cursorX, cursorY, itemWidth, legendRowHeight};
+            layout.legend.push_back(legendItem);
+
+            cursorX += itemWidth + 20.0;
+        }
     }
 
     layout.valid = true;

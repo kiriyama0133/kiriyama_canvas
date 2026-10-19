@@ -55,20 +55,24 @@ namespace {
 }
 
 /// 圆角矩形的轮廓点，顺时针（屏幕坐标 y 向下）。凸多边形，可直接喂三角扇。
+/// stepsOverride > 0 时强制使用指定分段数（内外环配对构网时保证顶点数严格一致）。
 [[nodiscard]] std::vector<core::Vec2d> roundRectPath(const core::RectD& rect,
-                                                     double radius) {
+                                                     double radius,
+                                                     int stepsOverride = 0) {
     const core::RectD r = rect.normalized();
     const double limit = std::min(r.width, r.height) * 0.5;
     const double rad = std::clamp(radius, 0.0, limit);
 
-    if (rad <= 0.0) {
+    if (rad <= 0.0 && stepsOverride <= 0) {
         return {{r.left(), r.top()},
                 {r.right(), r.top()},
                 {r.right(), r.bottom()},
                 {r.left(), r.bottom()}};
     }
 
-    const int steps = std::clamp(static_cast<int>(std::ceil(rad * 0.7)), 4, 24);
+    const int steps = stepsOverride > 0
+                          ? stepsOverride
+                          : std::clamp(static_cast<int>(std::ceil(rad * 1.2)), 6, 32);
     constexpr double kHalfPi = 1.5707963267948966;
 
     std::vector<core::Vec2d> path;
@@ -92,12 +96,13 @@ namespace {
 }
 
 /// 椭圆 / 圆的轮廓点。
-[[nodiscard]] std::vector<core::Vec2d> ellipsePath(const core::RectD& box) {
+[[nodiscard]] std::vector<core::Vec2d> ellipsePath(const core::RectD& box,
+                                                   int stepsOverride = 0) {
     const core::RectD r = box.normalized();
     const core::Vec2d center = r.center();
     const double rx = r.width * 0.5;
     const double ry = r.height * 0.5;
-    const int steps = segmentCount(std::max(rx, ry));
+    const int steps = stepsOverride > 0 ? stepsOverride : segmentCount(std::max(rx, ry));
     constexpr double kTau = 6.283185307179586;
 
     std::vector<core::Vec2d> path;
@@ -107,6 +112,47 @@ namespace {
         path.push_back({center.x + std::cos(angle) * rx, center.y + std::sin(angle) * ry});
     }
     return path;
+}
+
+/// 用三角带填充同顶点数内外环（用于圆角矩形/椭圆描边），走 SDL_RenderGeometry，
+/// 彻底规避 SDL_RenderLines 在逻辑缩放下的 [0, +1] 像素偏置与拐角断缝。
+[[nodiscard]] bool renderRingGeometry(SDL_Renderer* renderer,
+                                      std::span<const core::Vec2d> outer,
+                                      std::span<const core::Vec2d> inner,
+                                      const SDL_FColor& tint) {
+    if (!renderer || outer.size() < 3 || outer.size() != inner.size()) {
+        return false;
+    }
+    const std::size_t n = outer.size();
+    std::vector<SDL_Vertex> vertices;
+    vertices.reserve(n * 2);
+    for (std::size_t i = 0; i < n; ++i) {
+        vertices.push_back(SDL_Vertex{
+            SDL_FPoint{static_cast<float>(outer[i].x), static_cast<float>(outer[i].y)},
+            tint, SDL_FPoint{0.0f, 0.0f}});
+        vertices.push_back(SDL_Vertex{
+            SDL_FPoint{static_cast<float>(inner[i].x), static_cast<float>(inner[i].y)},
+            tint, SDL_FPoint{0.0f, 0.0f}});
+    }
+
+    std::vector<int> indices;
+    indices.reserve(n * 6);
+    for (std::size_t i = 0; i < n; ++i) {
+        const int o0 = static_cast<int>(i * 2);
+        const int i0 = o0 + 1;
+        const int o1 = static_cast<int>(((i + 1) % n) * 2);
+        const int i1 = o1 + 1;
+        indices.push_back(o0);
+        indices.push_back(o1);
+        indices.push_back(i1);
+        indices.push_back(o0);
+        indices.push_back(i1);
+        indices.push_back(i0);
+    }
+
+    return SDL_RenderGeometry(renderer, nullptr, vertices.data(),
+                              static_cast<int>(vertices.size()), indices.data(),
+                              static_cast<int>(indices.size()));
 }
 
 }  // namespace
@@ -201,8 +247,26 @@ Painter& Painter::strokeRoundRect(const core::RectD& rect, double radius) {
     if (!renderer_ || rect.empty() || opacity_ <= 0.0) {
         return *this;
     }
-    // 必须和 strokeRect / polyline 一样先落地颜色：漏了这步，描边会用上一次
-    // 残留的颜色（SparkBar 的 hover 描边就是这样"画了但看不见"）。
+    const core::RectD r = rect.normalized();
+    const double half = strokeWidth_ * 0.5;
+    const core::RectD outerRect{r.x - half, r.y - half,
+                                r.width + strokeWidth_, r.height + strokeWidth_};
+    const core::RectD innerRect{r.x + half, r.y + half,
+                                r.width - strokeWidth_, r.height - strokeWidth_};
+    if (innerRect.width <= 0.0 || innerRect.height <= 0.0) {
+        return fillRoundRect(outerRect, radius + half);
+    }
+
+    const double outerRad =
+        std::clamp(radius + half, 0.0, std::min(outerRect.width, outerRect.height) * 0.5);
+    const int steps = std::clamp(static_cast<int>(std::ceil(outerRad * 1.2)), 6, 32);
+    const std::vector<core::Vec2d> outer = roundRectPath(outerRect, radius + half, steps);
+    const std::vector<core::Vec2d> inner =
+        roundRectPath(innerRect, std::max(0.0, radius - half), steps);
+    if (renderRingGeometry(renderer_, outer, inner, currentFColor())) {
+        return *this;
+    }
+
     applyColor();
     const std::vector<core::Vec2d> path = roundRectPath(rect, radius);
     strokePath(path, true);
@@ -397,6 +461,23 @@ Painter& Painter::strokeEllipse(const core::RectD& box) {
     if (!renderer_ || box.empty() || opacity_ <= 0.0) {
         return *this;
     }
+    const core::RectD r = box.normalized();
+    const double half = strokeWidth_ * 0.5;
+    const core::RectD outerBox{r.x - half, r.y - half,
+                               r.width + strokeWidth_, r.height + strokeWidth_};
+    const core::RectD innerBox{r.x + half, r.y + half,
+                               r.width - strokeWidth_, r.height - strokeWidth_};
+    if (innerBox.width <= 0.0 || innerBox.height <= 0.0) {
+        return fillEllipse(outerBox);
+    }
+
+    const int steps = segmentCount(std::max(outerBox.width, outerBox.height) * 0.5);
+    const std::vector<core::Vec2d> outer = ellipsePath(outerBox, steps);
+    const std::vector<core::Vec2d> inner = ellipsePath(innerBox, steps);
+    if (renderRingGeometry(renderer_, outer, inner, currentFColor())) {
+        return *this;
+    }
+
     applyColor();
     const std::vector<core::Vec2d> path = ellipsePath(box);
     strokePath(path, true);

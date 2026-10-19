@@ -73,10 +73,10 @@ TEST(SparkBarLayout, OneItemPerTag) {
     }
 }
 
-TEST(SparkBarLayout, SegmentsStackBottomUp) {
+TEST(SparkBarLayout, SegmentsStackLeftToRight) {
     SparkBarData data;
-    data.series = {{"a", {}}, {"b", {}}};
-    data.tags = {"t"};
+    data.series = {{"C++", {}}, {"CMake", {}}};
+    data.tags = {"repo"};
     data.values = {{3.0, 1.0}};
 
     SparkBarOptions options;
@@ -87,14 +87,16 @@ TEST(SparkBarLayout, SegmentsStackBottomUp) {
     const auto& segments = layout.items[0].segments;
     ASSERT_EQ(segments.size(), 2u);
 
-    // 第一段（series 0）在下面：底边贴着基线，顶边低于第二段的底边。
-    EXPECT_NEAR(segments[0].rect.bottom(), 100.0, 1e-9);
-    EXPECT_GT(segments[0].rect.top(), segments[1].rect.top());
-    // 顶段的顶边与整柱外接框的顶边只差一个段缝隙（默认 1.5px）。
-    EXPECT_LE(std::abs(segments[1].rect.top() - layout.items[0].barRect.top()), 2.0);
+    // 第一段（series 0）在左侧：左边贴着 x = 0，右边在第二段的左边之左。
+    EXPECT_NEAR(segments[0].rect.left(), 0.0, 1e-9);
+    EXPECT_LT(segments[0].rect.right(), segments[1].rect.left());
+    // 末段的右边与整条外接框的右边贴齐。
+    EXPECT_NEAR(segments[1].rect.right(), layout.items[0].barRect.right(), 1e-9);
 
-    // 高度按 3:1 分配（各段还有 1.5px 缝隙）。
-    EXPECT_GT(segments[0].rect.height, segments[1].rect.height);
+    // 占比按 3:1（75% : 25%）分配，宽度考虑段间缝隙。
+    EXPECT_DOUBLE_EQ(segments[0].fraction, 0.75);
+    EXPECT_DOUBLE_EQ(segments[1].fraction, 0.25);
+    EXPECT_GT(segments[0].rect.width, segments[1].rect.width);
 }
 
 TEST(SparkBarLayout, ZeroTotalKeepsTagOnly) {
@@ -110,36 +112,40 @@ TEST(SparkBarLayout, ZeroTotalKeepsTagOnly) {
     EXPECT_FALSE(layout.items[0].tagRect.empty());  // 标签还在
 }
 
-TEST(SparkBarLayout, TagsSitBelowBars) {
+TEST(SparkBarLayout, TagsSitAboveBarsAndLegendBelow) {
     const SparkBarData data = sample();
-    const SparkBarLayout layout = computeSparkBarLayout(Vec2d{200.0, 120.0}, data);
+    const SparkBarLayout layout = computeSparkBarLayout(Vec2d{300.0, 200.0}, data);
     ASSERT_TRUE(layout.valid);
 
     for (const auto& item : layout.items) {
         ASSERT_FALSE(item.tagRect.empty());
-        EXPECT_GT(item.tagRect.top(), item.barRect.bottom());
+        EXPECT_LE(item.tagRect.bottom(), item.barRect.top());
     }
+    ASSERT_EQ(layout.legend.size(), 2u);
+    EXPECT_GT(layout.legend[0].hitRect.top(), layout.items.back().barRect.bottom());
 }
 
-TEST(SparkBarLayout, ExplicitBarWidthAndAutoWidth) {
+TEST(SparkBarLayout, ExplicitBarThicknessAndAutoThickness) {
     const SparkBarData data = sample();
 
     SparkBarOptions fixed;
     fixed.showTags = false;
     fixed.barWidth = 20.0;
     fixed.barGap = 10.0;
-    const SparkBarLayout fixedLayout = computeSparkBarLayout(Vec2d{300.0, 100.0}, data, fixed);
+    const SparkBarLayout fixedLayout = computeSparkBarLayout(Vec2d{300.0, 200.0}, data, fixed);
     ASSERT_EQ(fixedLayout.items.size(), 3u);
-    EXPECT_DOUBLE_EQ(fixedLayout.items[0].barRect.width, 20.0);
-    // 3 柱总宽 20*3 + 10*2 = 80，画布 300 → 水平居中。
-    EXPECT_NEAR(fixedLayout.items[0].barRect.left(), (300.0 - 80.0) * 0.5, 1e-9);
+    EXPECT_DOUBLE_EQ(fixedLayout.items[0].barRect.height, 20.0);
+    EXPECT_DOUBLE_EQ(fixedLayout.items[0].barRect.width, 300.0);
+    // 3 条总高 20*3 + 10*2 = 80，画布高 200 → 垂直居中。
+    EXPECT_NEAR(fixedLayout.items[0].barRect.top(), (200.0 - 80.0) * 0.5, 1e-9);
 
-    SparkBarOptions autoWidth;
-    autoWidth.showTags = false;
-    autoWidth.barGap = 10.0;
-    const SparkBarLayout autoLayout = computeSparkBarLayout(Vec2d{80.0, 100.0}, data, autoWidth);
+    SparkBarOptions autoThickness;
+    autoThickness.showTags = false;
+    autoThickness.barGap = 10.0;
+    const SparkBarLayout autoLayout =
+        computeSparkBarLayout(Vec2d{300.0, 80.0}, data, autoThickness);
     // (80 - 20) / 3 = 20
-    EXPECT_NEAR(autoLayout.items[0].barRect.width, 20.0, 1e-9);
+    EXPECT_NEAR(autoLayout.items[0].barRect.height, 20.0, 1e-9);
 }
 
 TEST(SparkBarLayout, InvalidOnEmptyCanvasOrData) {

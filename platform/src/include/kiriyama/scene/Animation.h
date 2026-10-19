@@ -42,6 +42,13 @@ enum class AnimProperty : std::uint8_t {
     Opacity,
     Scale,
     Rotation,
+    BorderWidth,
+    BorderColor,
+    CornerRadius,
+    ShadowOffset,
+    ShadowBlur,
+    ShadowSpread,
+    ShadowColor,
 };
 
 /// 一次动画请求的参数。
@@ -81,6 +88,21 @@ public:
     Animation& toScale(const Vec2d& target, AnimSpec spec = {});
     Animation& toRotation(double radians, AnimSpec spec = {});
 
+    // ------------------------------------------------------------ 边框与圆角过渡
+
+    Animation& toBorderWidth(double width, AnimSpec spec = {});
+    Animation& toBorderColor(const core::Color& color, AnimSpec spec = {});
+    Animation& toBorder(const core::Color& color, double width, AnimSpec spec = {});
+    Animation& toCornerRadius(double radius, AnimSpec spec = {});
+
+    // ------------------------------------------------------------ 阴影过渡
+
+    Animation& toShadowOffset(const Vec2d& offset, AnimSpec spec = {});
+    Animation& toShadowBlur(double blur, AnimSpec spec = {});
+    Animation& toShadowSpread(double spread, AnimSpec spec = {});
+    Animation& toShadowColor(const core::Color& color, AnimSpec spec = {});
+    Animation& toShadow(const core::BoxShadow& target, AnimSpec spec = {});
+
     // ------------------------------------------------------------ 查询
 
     [[nodiscard]] bool animating(AnimProperty property) const noexcept;
@@ -114,6 +136,8 @@ private:
         AnimProperty property{AnimProperty::Opacity};
         Vec2d from{};
         Vec2d to{};
+        core::Color fromColor{};
+        core::Color toColor{};
         double delay{0.0};
         double duration{0.0};
         math::Ease ease{math::Ease::OutCubic};
@@ -123,8 +147,11 @@ private:
     };
 
     void start(AnimProperty property, const Vec2d& to, const AnimSpec& spec);
+    void startColor(AnimProperty property, const core::Color& to, const AnimSpec& spec);
     void apply(AnimProperty property, const Vec2d& value);
+    void applyColor(AnimProperty property, const core::Color& value);
     [[nodiscard]] Vec2d current(AnimProperty property) const noexcept;
+    [[nodiscard]] core::Color currentColor(AnimProperty property) const noexcept;
     [[nodiscard]] Track* find(AnimProperty property) noexcept;
     [[nodiscard]] const Track* find(AnimProperty property) const noexcept;
 

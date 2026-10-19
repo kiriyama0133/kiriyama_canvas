@@ -265,4 +265,64 @@ TEST(Animation, ProgressWithoutTrackIsOne) {
     EXPECT_NEAR(anim.progress(AnimProperty::Scale), 1.0, 1e-9);
 }
 
+// ---------------------------------------------------------------- 边框与阴影过渡
+
+TEST(Animation, BorderAndCornerRadiusTransition) {
+    Animation anim;
+    anim.setBorder(kiriyama::core::Color::Rgb(0.0, 0.0, 0.0), 1.0, 4.0);
+
+    int doneCount = 0;
+    anim.toBorder(kiriyama::core::Color::Rgb(1.0, 0.5, 0.0), 5.0,
+                  AnimSpec{.duration = 0.4, .ease = Ease::Linear, .done = [&] { ++doneCount; }});
+    anim.toCornerRadius(12.0, linear(0.4));
+
+    EXPECT_TRUE(anim.animating(AnimProperty::BorderWidth));
+    EXPECT_TRUE(anim.animating(AnimProperty::BorderColor));
+    EXPECT_TRUE(anim.animating(AnimProperty::CornerRadius));
+
+    anim.update(0.2);
+    EXPECT_NEAR(anim.style().strokeWidth, 3.0, 1e-9);
+    EXPECT_NEAR(anim.style().stroke.color.r, 0.5, 1e-6);
+    EXPECT_NEAR(anim.style().stroke.color.g, 0.25, 1e-6);
+    EXPECT_NEAR(anim.style().cornerRadius, 8.0, 1e-9);
+    EXPECT_EQ(doneCount, 0);
+
+    anim.update(0.2);
+    EXPECT_NEAR(anim.style().strokeWidth, 5.0, 1e-9);
+    EXPECT_NEAR(anim.style().stroke.color.r, 1.0, 1e-6);
+    EXPECT_NEAR(anim.style().stroke.color.g, 0.5, 1e-6);
+    EXPECT_NEAR(anim.style().cornerRadius, 12.0, 1e-9);
+    EXPECT_EQ(doneCount, 1);
+    EXPECT_FALSE(anim.animating());
+}
+
+TEST(Animation, ShadowTransitionWithDuration) {
+    Animation anim;
+    anim.setShadow(kiriyama::core::Color::Rgba(0.0, 0.0, 0.0, 0.0), Vec2d{0.0, 0.0}, 0.0, 0.0);
+
+    int doneCount = 0;
+    kiriyama::core::BoxShadow target;
+    target.color = kiriyama::core::Color::Rgba(0.0, 0.0, 0.0, 0.4);
+    target.offset = Vec2d{0.0, 8.0};
+    target.blur = 16.0;
+    target.spread = 2.0;
+
+    anim.toShadow(target,
+                  AnimSpec{.duration = 0.5, .ease = Ease::Linear, .done = [&] { ++doneCount; }});
+
+    anim.update(0.25);
+    EXPECT_NEAR(anim.shadow().color.color.a, 0.2, 1e-6);
+    EXPECT_NEAR(anim.shadow().offset.y, 4.0, 1e-9);
+    EXPECT_NEAR(anim.shadow().blur, 8.0, 1e-9);
+    EXPECT_NEAR(anim.shadow().spread, 1.0, 1e-9);
+    EXPECT_TRUE(anim.style().hasShadow());
+
+    anim.update(0.25);
+    EXPECT_NEAR(anim.shadow().color.color.a, 0.4, 1e-6);
+    EXPECT_NEAR(anim.shadow().offset.y, 8.0, 1e-9);
+    EXPECT_NEAR(anim.shadow().blur, 16.0, 1e-9);
+    EXPECT_NEAR(anim.shadow().spread, 2.0, 1e-9);
+    EXPECT_EQ(doneCount, 1);
+}
+
 }  // namespace

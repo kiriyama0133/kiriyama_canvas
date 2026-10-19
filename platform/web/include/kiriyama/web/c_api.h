@@ -52,7 +52,6 @@
 #include "kiriyama/core/Data.h"
 #include "kiriyama/core/Layout.h"
 #include "kiriyama/core/SparkBar.h"
-#include "kiriyama/render/SparkBarRenderer.h"
 #include "kiriyama/render/TooltipHost.h"
 #include "kiriyama/scene/PieChart.h"
 #include "kiriyama/scene/SparkBar.h"

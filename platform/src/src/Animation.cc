@@ -14,6 +14,15 @@ namespace {
     return math::nearlyEqual(a.x, b.x) && math::nearlyEqual(a.y, b.y);
 }
 
+[[nodiscard]] bool sameColor(const core::Color& a, const core::Color& b) noexcept {
+    return math::nearlyEqual(a.r, b.r) && math::nearlyEqual(a.g, b.g) &&
+           math::nearlyEqual(a.b, b.b) && math::nearlyEqual(a.a, b.a);
+}
+
+[[nodiscard]] constexpr bool isColorProperty(AnimProperty property) noexcept {
+    return property == AnimProperty::BorderColor || property == AnimProperty::ShadowColor;
+}
+
 [[nodiscard]] Vec2d lerpVec(const Vec2d& a, const Vec2d& b, double t) noexcept {
     return Vec2d{math::lerp(a.x, b.x, t), math::lerp(a.y, b.y, t)};
 }
@@ -54,6 +63,59 @@ Animation& Animation::toRotation(double radians, AnimSpec spec) {
     return *this;
 }
 
+Animation& Animation::toBorderWidth(double width, AnimSpec spec) {
+    start(AnimProperty::BorderWidth, Vec2d{std::max(0.0, width), 0.0}, spec);
+    return *this;
+}
+
+Animation& Animation::toBorderColor(const core::Color& color, AnimSpec spec) {
+    startColor(AnimProperty::BorderColor, color, spec);
+    return *this;
+}
+
+Animation& Animation::toBorder(const core::Color& color, double width, AnimSpec spec) {
+    AnimSpec subSpec = spec;
+    subSpec.done = {};
+    startColor(AnimProperty::BorderColor, color, subSpec);
+    start(AnimProperty::BorderWidth, Vec2d{std::max(0.0, width), 0.0}, spec);
+    return *this;
+}
+
+Animation& Animation::toCornerRadius(double radius, AnimSpec spec) {
+    start(AnimProperty::CornerRadius, Vec2d{std::max(0.0, radius), 0.0}, spec);
+    return *this;
+}
+
+Animation& Animation::toShadowOffset(const Vec2d& offset, AnimSpec spec) {
+    start(AnimProperty::ShadowOffset, offset, spec);
+    return *this;
+}
+
+Animation& Animation::toShadowBlur(double blur, AnimSpec spec) {
+    start(AnimProperty::ShadowBlur, Vec2d{std::max(0.0, blur), 0.0}, spec);
+    return *this;
+}
+
+Animation& Animation::toShadowSpread(double spread, AnimSpec spec) {
+    start(AnimProperty::ShadowSpread, Vec2d{spread, 0.0}, spec);
+    return *this;
+}
+
+Animation& Animation::toShadowColor(const core::Color& color, AnimSpec spec) {
+    startColor(AnimProperty::ShadowColor, color, spec);
+    return *this;
+}
+
+Animation& Animation::toShadow(const core::BoxShadow& target, AnimSpec spec) {
+    AnimSpec subSpec = spec;
+    subSpec.done = {};
+    startColor(AnimProperty::ShadowColor, target.color.color, subSpec);
+    start(AnimProperty::ShadowOffset, target.offset, subSpec);
+    start(AnimProperty::ShadowSpread, Vec2d{target.spread, 0.0}, subSpec);
+    start(AnimProperty::ShadowBlur, Vec2d{std::max(0.0, target.blur), 0.0}, spec);
+    return *this;
+}
+
 void Animation::start(AnimProperty property, const Vec2d& to, const AnimSpec& spec) {
     const double duration = spec.duration >= 0.0 ? spec.duration : defaultDuration_;
     const Vec2d from = current(property);
@@ -84,6 +146,38 @@ void Animation::start(AnimProperty property, const Vec2d& to, const AnimSpec& sp
     track.property = property;
     track.from = from;
     track.to = to;
+    track.delay = std::max(0.0, spec.delay);
+    track.duration = duration;
+    track.ease = spec.ease;
+    track.done = std::move(spec.done);
+    tracks_.push_back(std::move(track));
+}
+
+void Animation::startColor(AnimProperty property, const core::Color& to, const AnimSpec& spec) {
+    const double duration = spec.duration >= 0.0 ? spec.duration : defaultDuration_;
+    const core::Color from = currentColor(property);
+
+    if (const Track* live = find(property)) {
+        if (sameColor(live->toColor, to) && math::nearlyEqual(live->duration, duration) &&
+            live->ease == spec.ease && math::nearlyZero(live->delay) &&
+            math::nearlyZero(spec.delay)) {
+            return;
+        }
+        stop(property);
+    }
+
+    if (duration <= 0.0 || sameColor(from, to)) {
+        applyColor(property, to);
+        if (spec.done && !sameColor(from, to)) {
+            spec.done();
+        }
+        return;
+    }
+
+    Track track;
+    track.property = property;
+    track.fromColor = from;
+    track.toColor = to;
     track.delay = std::max(0.0, spec.delay);
     track.duration = duration;
     track.ease = spec.ease;
@@ -141,21 +235,27 @@ void Animation::finish(AnimProperty property) noexcept {
     if (track == nullptr) {
         return;
     }
-    const Vec2d target = track->to;
-    stop(property);
-    apply(property, target);
+    if (isColorProperty(property)) {
+        const core::Color target = track->toColor;
+        stop(property);
+        applyColor(property, target);
+    } else {
+        const Vec2d target = track->to;
+        stop(property);
+        apply(property, target);
+    }
 }
 
 void Animation::finishAll() noexcept {
     // 先抄一份目标值：apply 会改 transform / style，期间 tracks_ 不能再被查。
-    std::vector<std::pair<AnimProperty, Vec2d>> targets;
-    targets.reserve(tracks_.size());
-    for (const Track& track : tracks_) {
-        targets.emplace_back(track.property, track.to);
-    }
+    std::vector<Track> snapshot = std::move(tracks_);
     tracks_.clear();
-    for (const auto& [property, value] : targets) {
-        apply(property, value);
+    for (const Track& track : snapshot) {
+        if (isColorProperty(track.property)) {
+            applyColor(track.property, track.toColor);
+        } else {
+            apply(track.property, track.to);
+        }
     }
 }
 
@@ -181,19 +281,28 @@ bool Animation::update(double deltaSeconds) {
         }
 
         if (local >= it->duration) {
+            const AnimProperty property = it->property;
             const Vec2d target = it->to;
+            const core::Color targetColor = it->toColor;
             if (it->done) {
                 finished.push_back(std::move(it->done));
             }
-            const AnimProperty property = it->property;
             it = tracks_.erase(it);
-            apply(property, target);
+            if (isColorProperty(property)) {
+                applyColor(property, targetColor);
+            } else {
+                apply(property, target);
+            }
             changed = true;
             continue;
         }
 
         const double eased = math::ease(it->ease, local / it->duration);
-        apply(it->property, lerpVec(it->from, it->to, eased));
+        if (isColorProperty(it->property)) {
+            applyColor(it->property, core::Color::mix(it->fromColor, it->toColor, eased));
+        } else {
+            apply(it->property, lerpVec(it->from, it->to, eased));
+        }
         changed = true;
         ++it;
     }
@@ -217,6 +326,7 @@ void Animation::apply(AnimProperty property, const Vec2d& value) {
             const double opacity = math::saturate(value.x);
             if (!math::nearlyEqual(style().opacity, opacity)) {
                 mutableStyle().opacity = opacity;
+                markDirty();
             }
             break;
         }
@@ -233,6 +343,74 @@ void Animation::apply(AnimProperty property, const Vec2d& value) {
                 rotation_ = value.x;
                 applyTrs();
             }
+            break;
+
+        case AnimProperty::BorderWidth: {
+            const double width = std::max(0.0, value.x);
+            if (!math::nearlyEqual(style().strokeWidth, width)) {
+                mutableStyle().strokeWidth = width;
+                markDirty();
+            }
+            break;
+        }
+
+        case AnimProperty::CornerRadius: {
+            const double radius = std::max(0.0, value.x);
+            if (!math::nearlyEqual(style().cornerRadius, radius)) {
+                mutableStyle().cornerRadius = radius;
+                markDirty();
+            }
+            break;
+        }
+
+        case AnimProperty::ShadowOffset:
+            if (!sameValue(style().shadow.offset, value)) {
+                mutableStyle().shadow.offset = value;
+                markDirty();
+            }
+            break;
+
+        case AnimProperty::ShadowBlur: {
+            const double blur = std::max(0.0, value.x);
+            if (!math::nearlyEqual(style().shadow.blur, blur)) {
+                mutableStyle().shadow.blur = blur;
+                markDirty();
+            }
+            break;
+        }
+
+        case AnimProperty::ShadowSpread:
+            if (!math::nearlyEqual(style().shadow.spread, value.x)) {
+                mutableStyle().shadow.spread = value.x;
+                markDirty();
+            }
+            break;
+
+        case AnimProperty::BorderColor:
+        case AnimProperty::ShadowColor:
+            break;
+    }
+}
+
+void Animation::applyColor(AnimProperty property, const core::Color& value) {
+    switch (property) {
+        case AnimProperty::BorderColor:
+            if (!sameColor(style().stroke.color, value) ||
+                style().stroke.token != core::ColorToken::None) {
+                mutableStyle().stroke = core::Paint{value};
+                markDirty();
+            }
+            break;
+
+        case AnimProperty::ShadowColor:
+            if (!sameColor(style().shadow.color.color, value) ||
+                style().shadow.color.token != core::ColorToken::None) {
+                mutableStyle().shadow.color = core::Paint{value};
+                markDirty();
+            }
+            break;
+
+        default:
             break;
     }
 }
@@ -254,8 +432,32 @@ Vec2d Animation::current(AnimProperty property) const noexcept {
             return scale_;
         case AnimProperty::Rotation:
             return Vec2d{rotation_, 0.0};
+        case AnimProperty::BorderWidth:
+            return Vec2d{style().strokeWidth, 0.0};
+        case AnimProperty::CornerRadius:
+            return Vec2d{style().cornerRadius, 0.0};
+        case AnimProperty::ShadowOffset:
+            return style().shadow.offset;
+        case AnimProperty::ShadowBlur:
+            return Vec2d{style().shadow.blur, 0.0};
+        case AnimProperty::ShadowSpread:
+            return Vec2d{style().shadow.spread, 0.0};
+        case AnimProperty::BorderColor:
+        case AnimProperty::ShadowColor:
+            break;
     }
     return Vec2d{};
+}
+
+core::Color Animation::currentColor(AnimProperty property) const noexcept {
+    switch (property) {
+        case AnimProperty::BorderColor:
+            return style().stroke.color;
+        case AnimProperty::ShadowColor:
+            return style().shadow.color.color;
+        default:
+            return {};
+    }
 }
 
 }  // namespace kiriyama::scene

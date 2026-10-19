@@ -52,58 +52,69 @@ struct SparkBarData {
 // ---------------------------------------------------------------- 样式 / 布局
 
 struct SparkBarOptions {
-    /// 柱宽；<= 0 时按"可用宽度 - 间距"均分。
+    /// 横向条的厚度（高度，像素）；<= 0 时按可用高度自适应（默认单条约 14px，多条自动均分钳制）。
     double barWidth{0.0};
-    /// 柱间距。
-    double barGap{10.0};
-    /// 堆叠段之间的缝隙（视觉上把层分开）。
-    double segmentGap{1.5};
-    /// 柱的圆角（顶段用完整圆角，中间段不圆角）。
-    double cornerRadius{3.0};
+    /// 多条横向柱之间的纵向间距。
+    double barGap{18.0};
+    /// 横向堆叠段之间的缝隙（视觉上把不同语言层分开）。
+    double segmentGap{2.0};
+    /// 横向段圆角半径。
+    double cornerRadius{5.0};
 
     /// hover 时给命中的那一段描一圈"它自己的颜色"（沿同一圆角）。0 = 关闭。
-    /// 描边是居中的，所以会向外长出半个线宽——视觉上那段更饱满、边界更实，
-    /// 不会引入第二种颜色（饼图时代那个深灰描边就是反面教材）。
     double hoverBorderWidth{2.0};
 
-    /// 柱下方 tag 行。
+    /// 是否显示行标题（tag）与底部 GitHub 风格圆点语言占比图例。
     bool showTags{true};
-    double tagFontSize{11.0};
-    Color tagColor{Color::Hex(0x6E6E68)};
-    /// tag 文字与柱子的间距。
+    double tagFontSize{12.0};
+    Color tagColor{Color::Hex(0x5A5A54)};
+    /// 行标题文字与横向条之间的间距。
     double tagGap{6.0};
-    /// tag 行高（0 = 按字号算）。
+    /// 行标题行高（0 = 按字号算）。
     double tagHeight{0.0};
 
-    /// 柱子整体的最高值对应的像素高度占可用高度的比例。
+    /// 内容区域占可用高度的比例（0..1）。
     double heightRatio{1.0};
 };
 
 struct SparkBarSegment {
-    /// 段矩形（已含段的缝隙）。
+    /// 横向段矩形（自左向右排列，已扣除段间缝隙）。
     RectD rect{};
     std::size_t seriesIndex{0};
     double value{0.0};
+    /// 该段在当前行中的占比（0..1）。
+    double fraction{0.0};
 };
 
 struct SparkBarItem {
     std::size_t tagIndex{0};
-    /// 整条柱的外接矩形（所有段合起来）。
+    /// 整条横向柱的外接矩形（左到右满宽）。
     RectD barRect{};
-    /// 自下而上的堆叠段。
+    /// 自左向右的堆叠段。
     std::vector<SparkBarSegment> segments{};
-    /// tag 行矩形（showTags 打开时有效，否则为空）。
+    /// 行标题矩形（showTags 打开时位于横向条上方，否则为空）。
     RectD tagRect{};
+};
+
+/// 底部 GitHub 风格图例项：彩色圆点 + "语言名 占比%"。
+struct SparkBarLegendItem {
+    std::size_t seriesIndex{0};
+    double value{0.0};
+    double fraction{0.0};
+    RectD dotRect{};
+    RectD textRect{};
+    RectD hitRect{};
 };
 
 struct SparkBarLayout {
     std::vector<SparkBarItem> items{};
+    std::vector<SparkBarLegendItem> legend{};
     /// 有可画的柱时为 true。
     bool valid{false};
 };
 
-/// 纯几何：给定画布尺寸与选项，算出每条柱、每个堆叠段、tag 行的矩形。
-/// 高度按 maxTotal 归一化；总量为 0 的柱只保留标签。
+/// 纯几何：给定画布尺寸与选项，算出每条横向百分比堆叠条、每个分段、行标题及底部图例的矩形。
+/// 每条横向条内部按该行 totalAt(t) 100% 归一化（自左向右铺满）；总量为 0 的行只保留标签。
 [[nodiscard]] SparkBarLayout computeSparkBarLayout(Vec2d size, const SparkBarData& data,
                                                    const SparkBarOptions& options = {});
 

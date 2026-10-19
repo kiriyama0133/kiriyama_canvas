@@ -107,7 +107,7 @@
   /// 页面级主题："light" / "dark"。描述树只发语义 token，颜色在渲染层
   /// 按当前主题解析——切主题不重建任何实例 / 数据，下一帧直接生效。
   Module['setTheme'] = function (name) {
-    ccall('kiriyama_set_theme', null, ['string'], [String(name || '')]);
+    call('kiriyama_set_theme', ['string'], [String(name || '')]);
   };
 
   // ================================================================ 表格

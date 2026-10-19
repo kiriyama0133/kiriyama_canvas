@@ -68,11 +68,14 @@ protected:
 
 private:
     void rebuild();
+    void syncScene();
+    void buildDescription(core::SceneNode& root) const;
 
     /// 指针命中的柱 / 段；没命中时下标为 core::kInvalidIndex。
     struct Pick {
         std::size_t item{core::kInvalidIndex};
         std::size_t segment{core::kInvalidIndex};
+        std::size_t legendSeries{core::kInvalidIndex};
     };
     [[nodiscard]] Pick pickAtLocal(const Vec2d& local) const noexcept;
 
@@ -83,9 +86,15 @@ private:
     std::vector<core::Color> colors_{};
 
     core::SparkBarLayout layout_{};
-    core::RectD lastFrame_{};
+    core::Vec2d lastSize_{};
+    core::SceneNode* inner_{nullptr};
+
     std::size_t hoverItem_{core::kInvalidIndex};
     std::size_t hoverSegment_{core::kInvalidIndex};
+    std::size_t hoverLegendSeries_{core::kInvalidIndex};
+
+    std::size_t lastHoverItem_{core::kInvalidIndex};
+    std::size_t lastHoverSegment_{core::kInvalidIndex};
 };
 
 }  // namespace kiriyama::scene

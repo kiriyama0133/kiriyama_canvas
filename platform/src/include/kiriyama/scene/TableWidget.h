@@ -118,7 +118,6 @@ private:
     void buildDescription(core::SceneNode& plot);
     void scrollRowIntoView(int position);
 
-    [[nodiscard]] core::Vec2d origin() const noexcept;
     /// 世界 → 组件本地（卡片左上角为原点）。
     [[nodiscard]] core::Vec2d localPoint(const core::Vec2d& worldPoint) const noexcept;
 
@@ -133,13 +132,13 @@ private:
 
     std::vector<double> widths_{};
     core::TableLayout layout_{};
+    core::Vec2d lastSize_{};
 
     double scroll_{0.0};
     int hoverPos_{-1};
     core::Vec2d pressPoint_{};
 
-    core::SceneNode* plot_{nullptr};
-    core::SceneNode* inner_{nullptr};  ///< 对账目标（plot 持平移，不参与对账）
+    core::SceneNode* inner_{nullptr};  ///< 对账目标组（直接挂在组件下，平移由组件自身 transform_ 承担）
     double lastScroll_{0.0};
     int lastHover_{-1};
     int lastSelected_{-1};

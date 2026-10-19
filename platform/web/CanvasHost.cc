@@ -24,7 +24,6 @@
 #include "kiriyama/render/Fonts.generated.h"
 #include "kiriyama/render/SceneDraw.h"
 #include "kiriyama/render/SceneHost.h"
-#include "kiriyama/render/SparkBarRenderer.h"
 #include "kiriyama/render/TooltipHost.h"
 #include "kiriyama/render/TtfFont.h"
 #include "kiriyama/scene/PieChart.h"
@@ -44,7 +43,6 @@ using kiriyama::render::AppConfig;
 using kiriyama::render::Font;
 using kiriyama::render::FontFace;
 using kiriyama::render::FontLibrary;
-using kiriyama::render::SparkBarRenderer;
 using kiriyama::render::TooltipHost;
 using kiriyama::render::drawSceneGeometry;
 using kiriyama::render::frameContext;
@@ -57,8 +55,8 @@ using kiriyama::web::InstanceInfo;
 
 std::shared_ptr<const FontFace> gBodyFace;
 
-/// 一个实例 = 一个组件节点。饼图不再需要专属 Renderer：
-/// 几何走 drawSceneGeometry（渲染树通用遍历），文本走 TextRenderer::drawScene。
+/// 一个实例 = 一个组件节点。所有组件（Pie / SparkBar / Table）都不再需要专属 Renderer：
+/// 几何统一走 drawSceneGeometry（渲染树通用遍历），文本统一走 TextRenderer::drawScene。
 struct Instance {
     Component type{Component::Pie};
 
@@ -66,8 +64,6 @@ struct Instance {
     PieChart* pie{nullptr};
     SparkBar* spark{nullptr};
     TableWidget* table{nullptr};
-
-    std::unique_ptr<SparkBarRenderer> sparkRenderer{};
 };
 
 class CanvasHost final : public kiriyama::render::AppDelegate {
@@ -166,20 +162,29 @@ public:
 
         // 主题是页面级状态：所有实例共用一份，切主题不重建任何场景树。
         const core::ChartTheme& theme = kiriyama::web::currentTheme();
+        const bool isDark = theme.background.r < 0.5f;
+        if (isDark != lastDark_) {
+            lastDark_ = isDark;
+            for (const auto& [handle, instance] : instances_) {
+                if (instance->table != nullptr) {
+                    instance->table->setStyle(makeTableStyle(isDark));
+                    if (instance->table->visible()) {
+                        instance->table->tickTree(ctx);
+                    }
+                }
+            }
+        }
+
+        // 画布底色跟随当前主题（SparkBar 等透明底组件与多组件间距由此统一铺底）。
+        app.painter().color(theme.background).clear();
 
         for (const auto& [handle, instance] : instances_) {
-            if (instance->pie != nullptr && instance->pie->visible()) {
-                // 图表 = 渲染树：几何走通用图元遍历，文本走 TextRenderer，
+            if (const kiriyama::scene::Widget* node = nodeOf(*instance);
+                node != nullptr && node->visible()) {
+                // 所有组件 = 渲染树：几何走通用图元遍历，文本走 TextRenderer，
                 // 渲染层不再按图表类型各写一个 Renderer。
-                drawSceneGeometry(app.painter(), *instance->pie, theme);
-                app.text().drawScene(*instance->pie, theme);
-            }
-            if (instance->spark != nullptr && instance->spark->visible()) {
-                instance->sparkRenderer->draw(*instance->spark);
-            }
-            if (instance->table != nullptr && instance->table->visible()) {
-                drawSceneGeometry(app.painter(), *instance->table, theme);
-                app.text().drawScene(*instance->table, theme);
+                drawSceneGeometry(app.painter(), *node, theme);
+                app.text().drawScene(*node, theme);
             }
         }
 
@@ -202,13 +207,28 @@ public:
     }
 
 private:
-    [[nodiscard]] static TableStyle makeTableStyle() {
+    [[nodiscard]] static TableStyle makeTableStyle(bool dark = false) {
         TableStyle style;
         style.headerFontSize = 10.5;
         style.cellFontSize = 12.0;
         style.metrics.headerHeight = 36.0;
         style.metrics.rowHeight = 31.0;
         style.metrics.paddingX = 14.0;
+        if (dark) {
+            style.background = core::Color::Hex(0x18181A);
+            style.headerBackground = core::Color::Hex(0x202023);
+            style.headerText = core::Color::Hex(0x9A9890);
+            style.headerActiveText = core::Color::Hex(0xEAE8E1);
+            style.rowText = core::Color::Hex(0xEAE8E1);
+            style.mutedText = core::Color::Hex(0x706E68);
+            style.grid = core::Color::Hex(0x2A2A2E);
+            style.border = core::Color::Hex(0x323236);
+            style.hoverRow = core::Color::Hex(0x232327);
+            style.selectedRow = core::Color::Hex(0x1F3248);
+            style.accent = core::Color::Hex(0x6395DC);
+            style.positive = core::Color::Hex(0xE06055);
+            style.negative = core::Color::Hex(0x4CB782);
+        }
         return style;
     }
 
@@ -267,8 +287,6 @@ private:
             case Component::SparkBar: {
                 auto node = std::make_unique<SparkBar>("sparkbar");
                 instance->spark = node.get();
-                instance->sparkRenderer =
-                    std::make_unique<SparkBarRenderer>(app.painter(), app.text());
                 root_->appendChild(std::move(node));
                 break;
             }
@@ -280,7 +298,7 @@ private:
                             text, Font{Font::builtinFace(), fontSize}, {});
                         return core::TextMetrics{layout.boxWidth, layout.height};
                     });
-                node->setStyle(makeTableStyle());
+                node->setStyle(makeTableStyle(lastDark_));
                 instance->table = node.get();
                 root_->appendChild(std::move(node));
                 break;
@@ -289,17 +307,22 @@ private:
         return instance;
     }
 
-    /// 把页面设的可见性 / 矩形落到节点上。值没变就不碰（setFrame 会触发重排）。
+    /// 把页面设的可见性 / 矩形落到节点上：位置走组件自身的 transform_，尺寸走局部 frame_。
     static void applyPlacement(Instance& instance, const InstanceInfo& info) {
-        SceneNode* node = nodeOf(instance);
+        kiriyama::scene::Widget* node = nodeOf(instance);
         if (node == nullptr) {
             return;
         }
         if (node->visible() != info.visible) {
             node->setVisible(info.visible);
         }
-        if (info.visible && !(node->frame() == info.frame)) {
-            node->setFrame(info.frame);
+        if (!info.visible) {
+            return;
+        }
+        node->setTranslation(info.frame.origin());
+        const RectD localFrame{0.0, 0.0, info.frame.width, info.frame.height};
+        if (!(node->frame() == localFrame)) {
+            node->setFrame(localFrame);
         }
     }
 
@@ -313,7 +336,7 @@ private:
         }
     }
 
-    [[nodiscard]] static SceneNode* nodeOf(Instance& instance) {
+    [[nodiscard]] static kiriyama::scene::Widget* nodeOf(Instance& instance) {
         if (instance.pie != nullptr) {
             return instance.pie;
         }
@@ -328,11 +351,11 @@ private:
         const kiriyama::core::Vec2d pointer = app.pointer();
         int found = 0;
         for (const auto& [handle, instance] : instances_) {
-            const SceneNode* node = nodeOf(*instance);
+            const kiriyama::scene::Widget* node = nodeOf(*instance);
             if (node == nullptr || !node->visible()) {
                 continue;
             }
-            if (contains(node->frame(), pointer)) {
+            if (node->hitBounds().contains(pointer)) {
                 found = handle;
             }
         }
@@ -346,11 +369,6 @@ private:
             return nullptr;
         }
         return it->second->table->visible() ? it->second->table : nullptr;
-    }
-
-    [[nodiscard]] static bool contains(const RectD& frame, const kiriyama::core::Vec2d& point) {
-        return point.x >= frame.x && point.y >= frame.y && point.x < frame.right() &&
-               point.y < frame.bottom();
     }
 
     void updateCursor(App& app) {
@@ -378,6 +396,7 @@ private:
     /// 句柄 → 实例。有序，所以绘制顺序 = 挂载顺序（后面盖前面）。
     std::map<int, std::unique_ptr<Instance>> instances_{};
     std::unique_ptr<TooltipHost> tooltip_{};
+    bool lastDark_{false};
 };
 
 }  // namespace

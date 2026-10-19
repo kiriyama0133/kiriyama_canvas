@@ -1,13 +1,23 @@
 #include "kiriyama/scene/SparkBar.h"
 
 #include <cstdio>
+#include <memory>
 #include <utility>
 
 #include "kiriyama/core/SceneBuilder.h"  // defaultSeriesPalette
+#include "kiriyama/core/SceneDiff.h"
 
 namespace kiriyama::scene {
 
 namespace {
+
+using core::Color;
+using core::NodeType;
+using core::RectD;
+using core::SceneNode;
+using core::TextAlign;
+using core::TextBaseline;
+using core::Vec2d;
 
 /// 数字格式化：整数不带小数点，小数两位。表格/卡片里的数值都这个口径。
 [[nodiscard]] std::string formatValue(double value) {
@@ -47,7 +57,13 @@ core::Color SparkBar::colorAt(std::size_t seriesIndex) const noexcept {
     if (colors_.empty()) {
         return core::Color::Hex(0x85B7EB);
     }
-    return colors_[seriesIndex % colors_.size()];
+    const core::Color candidate = colors_[seriesIndex % colors_.size()];
+    if (candidate.visible()) {
+        return candidate;
+    }
+    const auto fallback = core::defaultSeriesPalette();
+    return fallback.empty() ? core::Color::Hex(0x85B7EB)
+                            : fallback[seriesIndex % fallback.size()];
 }
 
 // ---------------------------------------------------------------- 命中
@@ -62,7 +78,7 @@ SparkBar::Pick SparkBar::pickAtLocal(const Vec2d& local) const noexcept {
             continue;
         }
         pick.item = i;
-        // 段命中：柱体内部再细分。tag 行没有段。
+        // 段命中：横向条内部再细分。tag 行没有段。
         for (std::size_t s = 0; s < item.segments.size(); ++s) {
             if (item.segments[s].rect.contains(local)) {
                 pick.segment = s;
@@ -71,11 +87,19 @@ SparkBar::Pick SparkBar::pickAtLocal(const Vec2d& local) const noexcept {
         }
         return pick;
     }
+    // 底部图例项命中
+    for (const core::SparkBarLegendItem& leg : layout_.legend) {
+        if (!leg.hitRect.empty() && leg.hitRect.contains(local)) {
+            pick.legendSeries = leg.seriesIndex;
+            return pick;
+        }
+    }
     return pick;
 }
 
 bool SparkBar::hitShape(const Vec2d& worldPoint) const noexcept {
-    return pickAtLocal(toLocal(worldPoint)).item != core::kInvalidIndex;
+    const Pick pick = pickAtLocal(toLocal(worldPoint) - frame().origin());
+    return pick.item != core::kInvalidIndex || pick.legendSeries != core::kInvalidIndex;
 }
 
 // ---------------------------------------------------------------- 气泡
@@ -96,8 +120,25 @@ TooltipText SparkBar::tooltipContent() const {
         return {};
     }
 
-    const Pick pick = pickAtLocal(toLocal(pointerPosition()));
-    if (pick.item == core::kInvalidIndex) {
+    // 优先复用 onUpdate 已经算好的缓存，避免每帧重复 pickAtLocal。
+    const Pick pick =
+        (hoverItem_ != core::kInvalidIndex || hoverLegendSeries_ != core::kInvalidIndex)
+            ? Pick{hoverItem_, hoverSegment_, hoverLegendSeries_}
+            : pickAtLocal(toLocal(pointerPosition()) - frame().origin());
+
+    // 命中底部图例：展示该语言（series）在全部行中的汇总与总占比。
+    if (pick.legendSeries != core::kInvalidIndex && pick.legendSeries < data_.series.size()) {
+        for (const core::SparkBarLegendItem& leg : layout_.legend) {
+            if (leg.seriesIndex == pick.legendSeries) {
+                char buffer[48] = {};
+                std::snprintf(buffer, sizeof(buffer), " · %.1f%%", leg.fraction * 100.0);
+                return TooltipText{data_.series[pick.legendSeries].name,
+                                   formatValue(leg.value) + buffer};
+            }
+        }
+    }
+
+    if (pick.item == core::kInvalidIndex || pick.item >= layout_.items.size()) {
         return {};
     }
 
@@ -107,8 +148,8 @@ TooltipText SparkBar::tooltipContent() const {
     }
     const std::string& tag = data_.tags[item.tagIndex];
 
-    // 落在某一段：报这一层的值 + 占整柱比例。
-    if (pick.segment != core::kInvalidIndex) {
+    // 落在某一段：报这一层的值 + 占整条比例。
+    if (pick.segment != core::kInvalidIndex && pick.segment < item.segments.size()) {
         const core::SparkBarSegment& segment = item.segments[pick.segment];
         const double total = data_.totalAt(item.tagIndex);
         const std::size_t seriesIndex = segment.seriesIndex;
@@ -122,10 +163,10 @@ TooltipText SparkBar::tooltipContent() const {
             std::snprintf(buffer, sizeof(buffer), " · %.1f%%", segment.value / total * 100.0);
             body += buffer;
         }
-        return TooltipText{tag + " · " + name, body};
+        return TooltipText{tag.empty() ? name : (tag + " · " + name), body};
     }
 
-    // 落在柱上（段缝、或总量为 0 只有标签）：整柱汇总。
+    // 落在条上（段缝、或标题行）：整条汇总。
     std::string body;
     for (std::size_t s = 0; s < data_.seriesCount(); ++s) {
         const double value = data_.valueAt(item.tagIndex, s);
@@ -152,58 +193,164 @@ TooltipText SparkBar::tooltipContent() const {
 }
 
 core::RectD SparkBar::tooltipAnchor() const {
-    // 锚在整块 SparkBar（图表区域）上：hover 哪根柱，气泡都浮在图的上方，
-    // 不会压住柱身。想贴到具体柱子上就覆盖这个函数。
-    const RectD& box = frame();
-    return box.empty() ? hitBounds() : box;
+    // 气泡锚在整张 SparkBar 的世界包围盒上：hover 哪一段都浮在图上方，不压住条身。
+    return hitBounds();
 }
 
-// ---------------------------------------------------------------- 重建
+// ---------------------------------------------------------------- 重建与描述树对账
 
 void SparkBar::onUpdate(const FrameContext&) {
-    if (dataDirty_ || !(frame() == lastFrame_)) {
+    if (frame().x != 0.0 || frame().y != 0.0) {
+        setTranslation(frame().origin());
+        setFrame({0.0, 0.0, frame().width, frame().height});
+    }
+
+    const bool needRebuild = dataDirty_ || !(frame().size() == lastSize_);
+    if (needRebuild) {
         rebuild();
     }
 
-    // 指针账本进 onUpdate 之前已经更新完了：这里把"落在哪根柱 / 哪一段"算一遍存下来。
-    // 渲染层（hover 描边）和 tooltip 都读这份缓存，不再各自重算、也就不会走偏。
     if (pointerInside()) {
-        const Pick pick = pickAtLocal(toLocal(pointerPosition()));
+        const Pick pick = pickAtLocal(toLocal(pointerPosition()) - frame().origin());
         hoverItem_ = pick.item;
         hoverSegment_ = pick.segment;
+        hoverLegendSeries_ = pick.legendSeries;
     } else {
         hoverItem_ = core::kInvalidIndex;
         hoverSegment_ = core::kInvalidIndex;
+        hoverLegendSeries_ = core::kInvalidIndex;
+    }
+
+    if (needRebuild || hoverItem_ != lastHoverItem_ || hoverSegment_ != lastHoverSegment_) {
+        syncScene();
     }
 }
 
 void SparkBar::rebuild() {
     dataDirty_ = false;
-    lastFrame_ = frame();
+    lastSize_ = frame().size();
+    layout_ = core::computeSparkBarLayout(lastSize_, data_, options_);
+}
 
-    layout_ = core::computeSparkBarLayout(frame().size(), data_, options_);
+void SparkBar::syncScene() {
+    lastHoverItem_ = hoverItem_;
+    lastHoverSegment_ = hoverSegment_;
 
-    // computeSparkBarLayout 给的是"以柱图左上角为原点"的纯几何（方便单测），
-    // 这里整体平移到节点本地坐标。
-    //
-    // 必须平移：渲染层画的是本地坐标（世界 = 本地，组件无祖先变换），
-    // hitShape 也拿 toLocal() 的本地坐标比对。以前只有渲染层加了 frame 原点、
-    // 命中没加，命中区于是整体上移了 frame.y ——柱子下半截点不到、tooltip 不弹。
-    const Vec2d origin = frame().origin();
-    if (origin.x != 0.0 || origin.y != 0.0) {
-        for (core::SparkBarItem& item : layout_.items) {
-            if (!item.barRect.empty()) {
-                item.barRect = item.barRect.translated(origin);
-            }
-            if (!item.tagRect.empty()) {
-                item.tagRect = item.tagRect.translated(origin);
-            }
-            for (core::SparkBarSegment& segment : item.segments) {
-                if (!segment.rect.empty()) {
-                    segment.rect = segment.rect.translated(origin);
-                }
+    if (inner_ == nullptr) {
+        auto inner = std::make_unique<SceneNode>(NodeType::Group, "sparkbar.scene");
+        inner_ = inner.get();
+        appendChild(std::move(inner));
+    }
+
+    if (!layout_.valid) {
+        inner_->clearChildren();
+        return;
+    }
+
+    SceneNode described{NodeType::Group, "sparkbar.scene"};
+    buildDescription(described);
+    (void)core::reconcileScene(*inner_, described);
+}
+
+void SparkBar::buildDescription(SceneNode& root) const {
+    const double radius = options_.cornerRadius;
+    const double fontSize = options_.tagFontSize > 0.0 ? options_.tagFontSize : 12.0;
+
+    // 1. 每条横向百分比堆叠条 + 上方行标题（如仓库/模块名）
+    for (std::size_t i = 0; i < layout_.items.size(); ++i) {
+        const core::SparkBarItem& item = layout_.items[i];
+        const std::string rowPrefix = "row." + std::to_string(i);
+
+        // 行标题（左对齐在横向条正上方）
+        if (options_.showTags && !item.tagRect.empty() && item.tagIndex < data_.tags.size()) {
+            const std::string& tag = data_.tags[item.tagIndex];
+            if (!tag.empty()) {
+                auto tagNode = std::make_unique<SceneNode>(NodeType::Text, rowPrefix + ".tag");
+                tagNode->setText(tag);
+                tagNode->setFrame(item.tagRect);
+                core::SceneStyle style = tagNode->style();
+                style.fill = options_.tagColor.visible() ? core::Paint{options_.tagColor}
+                                                         : core::Paint{core::ColorToken::Label};
+                style.fontSize = fontSize;
+                style.textAlign = TextAlign::Left;
+                style.textBaseline = TextBaseline::Middle;
+                tagNode->setStyle(style);
+                root.appendChild(std::move(tagNode));
             }
         }
+
+        // 各语言分段（自左向右按百分比排布）
+        for (std::size_t s = 0; s < item.segments.size(); ++s) {
+            const core::SparkBarSegment& seg = item.segments[s];
+            auto segNode = std::make_unique<SceneNode>(
+                NodeType::Rect, rowPrefix + ".seg." + std::to_string(seg.seriesIndex));
+            segNode->setFrame(seg.rect);
+            core::SceneStyle style = segNode->style();
+            style.fill = colorAt(seg.seriesIndex);
+            style.cornerRadius = radius;
+            segNode->setStyle(style);
+            root.appendChild(std::move(segNode));
+        }
+    }
+
+    // 2. Hover 外描边（压在所有填充段之上，不被相邻段盖住）
+    if (options_.hoverBorderWidth > 0.0 && hoverItem_ < layout_.items.size() &&
+        hoverSegment_ != core::kInvalidIndex) {
+        const core::SparkBarItem& item = layout_.items[hoverItem_];
+        if (hoverSegment_ < item.segments.size()) {
+            const core::SparkBarSegment& seg = item.segments[hoverSegment_];
+            const double effRadius =
+                math::clamp(radius, 0.0, std::min(seg.rect.width, seg.rect.height) * 0.5);
+            // 内沿向填充体内缩 0.25px 咬合，彻底消除圆角多边形离散化与抗锯齿带来的半像素白缝
+            const double half = options_.hoverBorderWidth * 0.5;
+            const double expand = std::max(0.0, half - 0.25);
+            const RectD outline{seg.rect.x - expand, seg.rect.y - expand,
+                                seg.rect.width + expand * 2.0,
+                                seg.rect.height + expand * 2.0};
+            auto hoverNode = std::make_unique<SceneNode>(NodeType::Rect, "hover.outline");
+            hoverNode->setFrame(outline);
+            core::SceneStyle style = hoverNode->style();
+            style.stroke = Color::mix(colorAt(seg.seriesIndex), Color::Rgb(0.0, 0.0, 0.0), 0.14);
+            style.strokeWidth = options_.hoverBorderWidth;
+            style.cornerRadius = effRadius + expand;
+            hoverNode->setStyle(style);
+            root.appendChild(std::move(hoverNode));
+        }
+    }
+
+    // 3. 底部 GitHub 风格圆点 + 语言占比图例（● C++ 68.4%   ● JavaScript 15.2% ...）
+    for (const core::SparkBarLegendItem& leg : layout_.legend) {
+        if (leg.seriesIndex >= data_.series.size()) {
+            continue;
+        }
+        const std::string keySuffix = std::to_string(leg.seriesIndex);
+
+        auto dot = std::make_unique<SceneNode>(NodeType::Ellipse, "legend.dot." + keySuffix);
+        dot->setFrame(leg.dotRect);
+        {
+            core::SceneStyle style = dot->style();
+            style.fill = colorAt(leg.seriesIndex);
+            dot->setStyle(style);
+        }
+        root.appendChild(std::move(dot));
+
+        char pctBuf[32] = {};
+        std::snprintf(pctBuf, sizeof(pctBuf), "  %.1f%%", leg.fraction * 100.0);
+        const std::string labelText = data_.series[leg.seriesIndex].name + pctBuf;
+
+        auto text = std::make_unique<SceneNode>(NodeType::Text, "legend.text." + keySuffix);
+        text->setText(labelText);
+        text->setFrame(leg.textRect);
+        {
+            core::SceneStyle style = text->style();
+            style.fill = options_.tagColor.visible() ? core::Paint{options_.tagColor}
+                                                     : core::Paint{core::ColorToken::Label};
+            style.fontSize = fontSize;
+            style.textAlign = TextAlign::Left;
+            style.textBaseline = TextBaseline::Middle;
+            text->setStyle(style);
+        }
+        root.appendChild(std::move(text));
     }
 }
 
