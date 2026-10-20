@@ -102,6 +102,12 @@ struct Dataset {
 
     /// 把 NaN / inf 转成缺失值，并统计空值。可重复调用。
     void sanitize(DataIssues* issues = nullptr);
+
+    /// 只读统计数据集中的缺失值、非有限值与空系列数量（不修改数据）。
+    [[nodiscard]] DataIssues inspectIssues() const noexcept;
+
+    /// 为每个系列生成稳定唯一的 diff key（名称在数据集内唯一时用 "series:<name>"，否则退回 "series#<index>"）。
+    [[nodiscard]] std::vector<std::string> seriesKeys() const;
 };
 
 enum class BarMode {
@@ -123,6 +129,10 @@ struct DataBounds {
 /// 柱状：x 固定为类别带 [-0.5, n-0.5]，y 强制包含 0 基线；堆叠时按类别累计正负值。
 [[nodiscard]] DataBounds computeBounds(const Dataset& dataset,
                                        BarMode mode = BarMode::None);
+
+/// 计算指定系列子区间 [firstSeries, firstSeries + seriesCount) 的有效点外接边界（双 Y 轴右轴系列用）。
+[[nodiscard]] DataBounds computeSeriesBounds(const Dataset& dataset, std::size_t firstSeries,
+                                             std::size_t seriesCount) noexcept;
 
 // ---------------------------------------------------------------- 原始数据接入
 
@@ -152,6 +162,9 @@ struct PieChartData {
 
     /// 非有限值、负值、零值都会被排除在统计之外。
     void sanitize(DataIssues* issues = nullptr);
+
+    /// 只读统计饼图切片中的非有限值与负值数量（不修改数据）。
+    [[nodiscard]] DataIssues inspectIssues() const noexcept;
 
     /// 只累加正的有限值。
     [[nodiscard]] double total() const noexcept;

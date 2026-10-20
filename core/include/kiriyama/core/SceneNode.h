@@ -98,6 +98,8 @@ public:
     [[nodiscard]] std::size_t childCount() const noexcept { return children_.size(); }
     [[nodiscard]] SceneNode* childAt(std::size_t index) noexcept;
     [[nodiscard]] const SceneNode* childAt(std::size_t index) const noexcept;
+    [[nodiscard]] SceneNode* findChildByKey(std::string_view key) noexcept;
+    [[nodiscard]] const SceneNode* findChildByKey(std::string_view key) const noexcept;
     [[nodiscard]] std::span<const std::unique_ptr<SceneNode>> children() const noexcept {
         return children_;
     }

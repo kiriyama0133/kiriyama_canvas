@@ -41,22 +41,7 @@ using kiriyama::render::TooltipStyle;
 using kiriyama::scene::PieChart;
 using kiriyama::scene::SparkBar;
 
-namespace {
-
-/// 饼图 pending 样式（原 render::PieStyle 的字段；随 PieChartRenderer 一起
-/// 迁进组件后，这里只是"页面 setter → 组件"的暂存）。
-struct PieStyle {
-    bool showLabels{true};
-    bool showValues{true};
-    double labelFontSize{12.5};
-    Color labelColor{Color::Hex(0x5A5A54)};
-    Color gapColor{Color::Hex(0xFFFFFF)};
-    double gapWidth{0.0};
-};
-
-}  // namespace
-
-// 下面 SparkStackBar 的状态统一用 core:: 前缀（别名，避免和上面 using 的名字打架）。
+// 下面 SparkStackBar / Pie 的状态统一用 core:: 前缀（别名，避免和上面 using 的名字打架）。
 namespace core = kiriyama::core;
 
 using kiriyama::web::Component;
@@ -76,9 +61,9 @@ struct PieState {
     std::vector<PieSlice> buffered;
     bool collecting{false};
 
-    PieStyle style;
-    PieLayoutOptions layout;
-    double explode{6.0};
+    core::PieStyle style{};
+    PieLayoutOptions& layout{style.layout};
+    double& explode{style.explodeDistance};
     bool dataDirty{false};
     bool styleDirty{false};
 
@@ -723,11 +708,9 @@ void pumpPie(int handle, PieChart& chart) {
     PieState& pie = slot->pie;
     if (pie.styleDirty) {
         pie.styleDirty = false;
-        chart.setLabelStyle(pie.style.showLabels, pie.style.showValues, pie.style.labelFontSize,
-                            pie.style.labelColor);
-        chart.setGapStyle(pie.style.gapWidth, pie.style.gapColor);
-        chart.setLayoutOptions(pie.layout);
-        chart.setSliceDefaults(pie.explode);
+        core::PieStyle nextStyle = pie.style;
+        nextStyle.textMeasure = chart.style().textMeasure;
+        chart.setStyle(nextStyle);
     }
     if (pie.dataDirty) {
         pie.dataDirty = false;
@@ -746,7 +729,7 @@ void pumpSparkBar(int handle, scene::SparkBar& bar) {
     spark.dirty = false;
     bar.setOptions(spark.options);
     bar.setColors(spark.colors);
-    bar.setData(spark.data);  // 值语义：拷贝进组件
+    bar.setData(std::move(spark.data));  // 组件自己持有 model（移动接管）
     spark.data = {};
 }
 
@@ -756,7 +739,7 @@ void pumpTable(int handle, scene::TableWidget& table) {
         return;
     }
     slot->table.dirty = false;
-    table.setData(slot->table.data);  // 值语义：拷贝进组件
+    table.setData(std::move(slot->table.data));  // 组件自己持有 model（移动接管）
     slot->table.data = {};
 }
 

@@ -118,4 +118,21 @@ struct SparkBarLayout {
 [[nodiscard]] SparkBarLayout computeSparkBarLayout(Vec2d size, const SparkBarData& data,
                                                    const SparkBarOptions& options = {});
 
+/// SparkBar 局部坐标命中结果；未命中字段为 kNone。
+struct SparkBarPick {
+    static constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+
+    std::size_t item{kNone};
+    std::size_t segment{kNone};
+    std::size_t legendSeries{kNone};
+
+    [[nodiscard]] constexpr bool hit() const noexcept {
+        return item != kNone || legendSeries != kNone;
+    }
+};
+
+/// 判定局部坐标落在哪条横向柱 / 哪一段 / 底部哪个图例项上。
+[[nodiscard]] SparkBarPick hitTestSparkBar(const SparkBarLayout& layout,
+                                           Vec2d localPoint) noexcept;
+
 }  // namespace kiriyama::core

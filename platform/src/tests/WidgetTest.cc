@@ -221,4 +221,101 @@ TEST(Widget, BorderAndShadowConfiguration) {
     EXPECT_FALSE(widget.style().hasShadow());
 }
 
+// ---------------------------------------------------------------- 三阶段路由事件（Tunnel -> Target -> Bubble）
+
+TEST(Widget, RoutedKeyEventTunnelTargetBubbleOrder) {
+    using kiriyama::scene::EventPhase;
+    using kiriyama::scene::KeyCode;
+    using kiriyama::scene::KeyEvent;
+    using kiriyama::scene::dispatchKeyToTree;
+
+    Probe root("root");
+    root.setFrame(RectD{0.0, 0.0, 400.0, 400.0});
+
+    auto parent = std::make_unique<Probe>("parent");
+    parent->setFrame(RectD{0.0, 0.0, 200.0, 200.0});
+    Probe* parentRaw = parent.get();
+
+    auto child = std::make_unique<Probe>("child");
+    child->setFrame(RectD{10.0, 10.0, 50.0, 50.0});
+    Probe* childRaw = child.get();
+
+    parent->appendChild(std::move(child));
+    root.appendChild(std::move(parent));
+
+    std::vector<std::string> trace;
+
+    root.captureKey(KeyCode::Down, [&](const KeyEvent& ev) {
+        EXPECT_EQ(ev.phase, EventPhase::Tunnel);
+        trace.emplace_back("root:tunnel");
+        return false;  // 不拦截，继续向下
+    });
+    parentRaw->captureKey(KeyCode::Down, [&](const KeyEvent& ev) {
+        EXPECT_EQ(ev.phase, EventPhase::Tunnel);
+        trace.emplace_back("parent:tunnel");
+        return false;
+    });
+    childRaw->bindKey(KeyCode::Down, [&](const KeyEvent& ev) {
+        EXPECT_EQ(ev.phase, EventPhase::Target);
+        trace.emplace_back("child:target");
+        return false;  // 不拦截，继续向上冒泡
+    });
+    parentRaw->bindKey(KeyCode::Down, [&](const KeyEvent& ev) {
+        EXPECT_EQ(ev.phase, EventPhase::Bubble);
+        trace.emplace_back("parent:bubble");
+        return false;
+    });
+    root.bindKey(KeyCode::Down, [&](const KeyEvent& ev) {
+        EXPECT_EQ(ev.phase, EventPhase::Bubble);
+        trace.emplace_back("root:bubble");
+        return true;  // 在根节点冒泡消费
+    });
+
+    EXPECT_TRUE(dispatchKeyToTree(root, KeyEvent{KeyCode::Down}, {20.0, 20.0}));
+    const std::vector<std::string> expected{
+        "root:tunnel", "parent:tunnel", "child:target", "parent:bubble", "root:bubble"};
+    EXPECT_EQ(trace, expected);
+
+    // 若 parent 在隧道阶段直接拦截消费，则 child 与后续冒泡均不再触发
+    trace.clear();
+    parentRaw->captureKeyDown(KeyCode::Up, [&]() { trace.emplace_back("parent:tunnel:consumed"); });
+    childRaw->bindKeyDown(KeyCode::Up, [&]() { trace.emplace_back("child:should_not_run"); });
+
+    EXPECT_TRUE(dispatchKeyToTree(root, KeyEvent{KeyCode::Up}, {20.0, 20.0}));
+    ASSERT_EQ(trace.size(), 1u);
+    EXPECT_EQ(trace.front(), "parent:tunnel:consumed");
+}
+
+TEST(Widget, ChildStopPointerPropagationBlocksParentClickAndHover) {
+    Probe parent("table");
+    parent.setFrame(RectD{0.0, 0.0, 300.0, 300.0});
+
+    auto thumb = std::make_unique<Probe>("thumb");
+    thumb->setFrame(RectD{280.0, 20.0, 16.0, 80.0});
+    thumb->setStopPointerPropagation(true);
+    Probe* thumbRaw = thumb.get();
+    parent.appendChild(std::move(thumb));
+
+    // 1. 指针落在普通区域：父组件正常悬停与点击
+    parent.tickTree(at(50.0, 50.0, false));
+    EXPECT_TRUE(parent.pointerInside());
+    EXPECT_FALSE(thumbRaw->pointerInside());
+
+    // 2. 指针移入开启了 stopPointerPropagation 的子组件（如滚动条滑块）：
+    //    子组件获得悬停与点击，父组件自动解除悬停且不触发 onPress / onRelease
+    parent.tickTree(at(288.0, 40.0, false));
+    EXPECT_TRUE(thumbRaw->pointerInside());
+    EXPECT_FALSE(parent.pointerInside());
+    EXPECT_EQ(parent.leaves, 1);
+
+    parent.tickTree(at(288.0, 40.0, true));
+    parent.tickTree(at(288.0, 40.0, false));
+    EXPECT_EQ(thumbRaw->presses, 1);
+    EXPECT_EQ(thumbRaw->releases, 1);
+    EXPECT_TRUE(thumbRaw->clicked());
+    EXPECT_EQ(parent.presses, 0);
+    EXPECT_EQ(parent.releases, 0);
+    EXPECT_FALSE(parent.clicked());
+}
+
 }  // namespace

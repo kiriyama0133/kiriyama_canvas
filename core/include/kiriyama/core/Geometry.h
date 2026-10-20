@@ -118,6 +118,29 @@ struct RectD {
         return intersection(bounds);
     }
 
+    /// 软约束（平移不裁尺寸）：当矩形超出 bounds（内缩 margin）时将其拉回边界内，保持原 width / height 不变。
+    [[nodiscard]] constexpr RectD confinedTo(const RectD& bounds,
+                                             double margin = 0.0) const noexcept {
+        if (width <= 0.0 || bounds.width <= 0.0) {
+            return *this;
+        }
+        double nx = x;
+        if (nx + width > bounds.right() - margin) {
+            nx = bounds.right() - margin - width;
+        }
+        if (nx < bounds.left() + margin) {
+            nx = bounds.left() + margin;
+        }
+        double ny = y;
+        if (ny + height > bounds.bottom() - margin) {
+            ny = bounds.bottom() - margin - height;
+        }
+        if (ny < bounds.top() + margin) {
+            ny = bounds.top() + margin;
+        }
+        return {nx, ny, width, height};
+    }
+
     /// 点到矩形的最近距离，点在内部为 0。
     [[nodiscard]] double distanceTo(const Vec2d& point) const noexcept {
         const double dx = point.x < left() ? left() - point.x

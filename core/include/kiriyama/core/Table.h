@@ -3,13 +3,13 @@
 // 表格数据模型 + 排序状态机。
 //
 // 分工（和 VirtualScroll / InteractionState 同构）：
-//   本模块  持有"视图状态"（当前排序、选中行），并维护行置换 order[]
-//   调用方  持有"数据"（TableData），通过 attach() 交给本模块只读引用
+//   组件层  （如 TableWidget）自己持有 TableData，作为唯一数据真相源
+//   本模块  持有"视图状态"（当前排序、选中行），通过 attach() 绑定组件的数据并维护行置换 order[]
 //   渲染层  读 order() 决定画哪一行的第几条数据，自己不做排序
 //
 // 三条关键约定：
-//   1. 表格**不持有数据**。TableData 永远归调用方，这里只留一个 const 指针 +
-//      调用方显式给的 dataVersion。拷贝一份就等于有了第二个真相源。
+//   1. TableData 由表格组件自身持有（值语义 / 移动语义接管）；TableState 只留一个 const 指针 +
+//      dataVersion 引用组件内的数据，不在状态机里二次拷贝。
 //   2. 排序**不重排数据**，只重排 order[]（行下标置换）。这样行身份稳定，
 //      选中 / 动画 / SceneDiff 的 key 全部不受影响；100 万行移动的是 4 字节而不是整行。
 //   3. 排序值是**类型化**的，不是渲染用的字符串。数字列按 double / int64 比较，
@@ -58,6 +58,17 @@ struct TableCell {
     [[nodiscard]] bool missing() const noexcept {
         return std::holds_alternative<std::monostate>(value);
     }
+
+    /// 提取单元格数值（double 或 int64_t 转为 double；非数值类型返回 0.0）。
+    [[nodiscard]] constexpr double numericValue() const noexcept {
+        if (const auto* d = std::get_if<double>(&value)) {
+            return *d;
+        }
+        if (const auto* i = std::get_if<std::int64_t>(&value)) {
+            return static_cast<double>(*i);
+        }
+        return 0.0;
+    }
 };
 
 /// 列的类型决定比较器。**必须与塞进去的 variant 分支一致**——
@@ -85,6 +96,16 @@ struct TableColumn {
     std::string format;
 
     [[nodiscard]] bool valid() const noexcept { return !id.empty(); }
+
+    /// 是否为数值型列（Number / Integer / Date，默认右对齐）。
+    [[nodiscard]] constexpr bool isNumeric() const noexcept {
+        return type == CellType::Number || type == CellType::Integer || type == CellType::Date;
+    }
+
+    /// 格式化模板是否显式要求正负号着色（含 '+'，如 "%+.2f%%"）。
+    [[nodiscard]] bool hasSignFormat() const noexcept {
+        return format.find('+') != std::string::npos;
+    }
 };
 
 /// 一行。cells 允许比 columns 短，缺的部分按空单元格渲染。
@@ -176,6 +197,9 @@ struct TableChange {
 /// 列是否可参与排序（列存在且 sortable）。
 [[nodiscard]] bool isSortableColumn(const TableData& data, std::string_view columnId) noexcept;
 
+/// 单元格的显示串（纯逻辑格式化：数字列走 column.format，缺失返回空串）。
+[[nodiscard]] std::string formatTableCell(const TableCell& cell, const TableColumn& column);
+
 // ---------------------------------------------------------------- 状态
 
 class TableState {
@@ -228,6 +252,10 @@ public:
     TableChange setSelection(std::string_view rowKey);
     /// 按显示位置选中（点击行时用，内部转成 key）。
     TableChange selectPosition(int position);
+    /// 按显示位置相对移动选中行（未选中时 delta > 0 选首行，delta < 0 选末行）。
+    TableChange moveSelection(int delta);
+    TableChange selectFirst();
+    TableChange selectLast();
     TableChange clearSelection();
 
     [[nodiscard]] bool hasSelection() const noexcept { return !selectedKey_.empty(); }

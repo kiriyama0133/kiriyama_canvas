@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "Color.h"
@@ -49,7 +50,7 @@ struct Paint {
 
     /// 允许 `style.fill = Color::...` 的直接色写法（存量调用零改动）。
     constexpr Paint(Color c) noexcept : color(c) {}
-    constexpr Paint(ColorToken t) noexcept : token(t) {}
+    constexpr Paint(ColorToken t, float alpha = 1.0f) noexcept : token(t), alphaScale(alpha) {}
 
     /// 第 index 个系列色，可选透明度缩放。
     [[nodiscard]] static constexpr Paint series(std::size_t index,
@@ -96,5 +97,9 @@ struct ChartTheme {
 
 /// 8 色分类色板（蓝 / 青 / 橙 / 紫 / 红 / 绿 / 灰蓝 / 玫红）。
 [[nodiscard]] const std::vector<Color>& defaultSeriesPalette();
+
+/// 从可选覆盖色板（或回退到 defaultSeriesPalette）中循环取第 index 个系列色。
+[[nodiscard]] Color resolveSeriesColor(std::span<const Color> palette,
+                                       std::size_t seriesIndex) noexcept;
 
 }  // namespace kiriyama::core

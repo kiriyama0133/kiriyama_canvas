@@ -124,6 +124,30 @@ const SceneNode* SceneNode::childAt(std::size_t index) const noexcept {
     return index < children_.size() ? children_[index].get() : nullptr;
 }
 
+SceneNode* SceneNode::findChildByKey(std::string_view key) noexcept {
+    if (key.empty()) {
+        return nullptr;
+    }
+    for (const auto& child : children_) {
+        if (child != nullptr && child->key_ == key) {
+            return child.get();
+        }
+    }
+    return nullptr;
+}
+
+const SceneNode* SceneNode::findChildByKey(std::string_view key) const noexcept {
+    if (key.empty()) {
+        return nullptr;
+    }
+    for (const auto& child : children_) {
+        if (child != nullptr && child->key_ == key) {
+            return child.get();
+        }
+    }
+    return nullptr;
+}
+
 int SceneNode::indexInParent() const noexcept {
     if (parent_ == nullptr) {
         return -1;

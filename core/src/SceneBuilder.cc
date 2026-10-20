@@ -6,6 +6,7 @@
 #include <span>
 #include <utility>
 
+#include "kiriyama/math/Curve.h"
 #include "kiriyama/math/MathUtils.h"
 
 namespace kiriyama::core {
@@ -16,9 +17,6 @@ using math::kTwoPi;
 
 /// 网格线贴到绘图区边缘 0.5px 内就不再画，否则和轴线重叠成一条粗线。
 constexpr double kEdgeTolerance = 0.5;
-
-/// 曲线细分的总点数上限，防止 10 万个点 × 16 段把 wasm 内存吃穿。
-constexpr std::size_t kMaxCurvePoints = 4000;
 
 // ---------------------------------------------------------------- 上下文
 //
@@ -122,60 +120,11 @@ std::unique_ptr<SceneNode> makeText(std::string key, std::string text, const Rec
     return node;
 }
 
-// ---------------------------------------------------------------- 文本
+// ---------------------------------------------------------------- 文本辅助
 
 TextMetrics measureText(const LayoutOptions& layoutOptions, std::string_view text,
                         double fontSize) {
-    if (text.empty()) {
-        return {};
-    }
-    TextMetrics metrics = layoutOptions.measureText
-                              ? layoutOptions.measureText(text, fontSize)
-                              : defaultTextMeasure(text, fontSize);
-    if (!(metrics.height > 0.0)) {
-        metrics.height = fontSize * 1.25;
-    }
-    return metrics;
-}
-
-/// 把锚点（对齐基准点）换成排版盒。
-RectD frameAt(Vec2d anchor, const TextMetrics& metrics, TextAlign horizontal,
-              TextBaseline vertical) {
-    double x = anchor.x;
-    if (horizontal == TextAlign::Center) {
-        x -= metrics.width * 0.5;
-    } else if (horizontal == TextAlign::Right) {
-        x -= metrics.width;
-    }
-    double y = anchor.y;
-    if (vertical == TextBaseline::Middle) {
-        y -= metrics.height * 0.5;
-    } else if (vertical == TextBaseline::Bottom) {
-        y -= metrics.height;
-    }
-    return {x, y, metrics.width, metrics.height};
-}
-
-/// 软夹取：标签整体推出画布时拉回来，不裁切文字。
-RectD clampToCanvas(const RectD& frame, const RectD& canvas, double margin = 2.0) {
-    if (frame.width <= 0.0 || canvas.width <= 0.0) {
-        return frame;
-    }
-    double x = frame.x;
-    if (x + frame.width > canvas.right() - margin) {
-        x = canvas.right() - margin - frame.width;
-    }
-    if (x < margin) {
-        x = margin;
-    }
-    double y = frame.y;
-    if (y + frame.height > canvas.bottom() - margin) {
-        y = canvas.bottom() - margin - frame.height;
-    }
-    if (y < margin) {
-        y = margin;
-    }
-    return {x, y, frame.width, frame.height};
+    return measureText(layoutOptions.measureText, text, fontSize);
 }
 
 std::string formatValueLabel(double value, double span) {
@@ -187,157 +136,6 @@ std::string formatValueLabel(double value, double span) {
     }
     return format.format(value, step);
 }
-
-// ---------------------------------------------------------------- 数据辅助
-
-DataIssues countIssues(const Dataset& dataset) {
-    DataIssues issues;
-    for (const Series& series : dataset.series) {
-        if (series.points.empty()) {
-            ++issues.emptySeries;
-            continue;
-        }
-        for (const DataPoint& point : series.points) {
-            if (!point.hasValue) {
-                ++issues.nullValues;
-            } else if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
-                ++issues.nonFiniteValues;
-            }
-        }
-    }
-    return issues;
-}
-
-DataIssues countIssues(const PieChartData& data) {
-    DataIssues issues;
-    for (const PieSlice& slice : data.slices) {
-        if (!std::isfinite(slice.value)) {
-            ++issues.nonFiniteValues;
-        } else if (slice.value < 0.0) {
-            ++issues.negativeValues;
-        }
-    }
-    return issues;
-}
-
-DataBounds boundsOfSeries(const Dataset& dataset, std::size_t first, std::size_t count) {
-    DataBounds bounds;
-    for (std::size_t i = first; i < first + count && i < dataset.series.size(); ++i) {
-        for (const DataPoint& point : dataset.series[i].points) {
-            if (!point.valid()) {
-                continue;
-            }
-            if (!bounds.hasData) {
-                bounds.x = RangeD{point.x, point.x};
-                bounds.y = RangeD{point.y, point.y};
-                bounds.hasData = true;
-            } else {
-                bounds.x.expandToInclude(point.x);
-                bounds.y.expandToInclude(point.y);
-            }
-        }
-    }
-    return bounds;
-}
-
-/// 系列 key：名字唯一时用名字，否则用下标。
-/// 两个同名系列共用一个 key 会让 diff 把节点配错，宁可用下标。
-std::vector<std::string> makeSeriesKeys(const Dataset& dataset) {
-    std::vector<std::string> keys;
-    keys.reserve(dataset.series.size());
-    for (std::size_t i = 0; i < dataset.series.size(); ++i) {
-        const std::string& name = dataset.series[i].name;
-        bool unique = !name.empty();
-        if (unique) {
-            for (std::size_t j = 0; j < dataset.series.size(); ++j) {
-                if (j != i && dataset.series[j].name == name) {
-                    unique = false;
-                    break;
-                }
-            }
-        }
-        keys.push_back(unique ? "series:" + name : "series#" + std::to_string(i));
-    }
-    return keys;
-}
-
-// ---------------------------------------------------------------- 曲线
-
-/// 单调三次 Hermite（Fritsch–Carlson）。x 不严格递增时退回折线——
-/// 数据里 x 回绕（时间轴乱序）是常见脏数据，硬插值会画出自交的怪线。
-std::vector<Vec2d> monotoneCurve(std::span<const Vec2d> points, int segments) {
-    if (points.size() < 3 || segments <= 1) {
-        return {points.begin(), points.end()};
-    }
-    const std::size_t n = points.size();
-    for (std::size_t i = 1; i < n; ++i) {
-        if (!(points[i].x > points[i - 1].x)) {
-            return {points.begin(), points.end()};
-        }
-    }
-
-    const std::size_t spans = n - 1;
-    std::size_t perSpan = static_cast<std::size_t>(segments);
-    if (spans * perSpan > kMaxCurvePoints) {
-        perSpan = std::max<std::size_t>(1, kMaxCurvePoints / spans);
-    }
-    if (perSpan <= 1) {
-        return {points.begin(), points.end()};
-    }
-
-    std::vector<double> delta(spans);
-    for (std::size_t i = 0; i < spans; ++i) {
-        delta[i] = (points[i + 1].y - points[i].y) / (points[i + 1].x - points[i].x);
-    }
-
-    std::vector<double> slope(n);
-    slope[0] = delta[0];
-    slope[n - 1] = delta[spans - 1];
-    for (std::size_t i = 1; i + 1 < n; ++i) {
-        // 极值点处切线取 0，曲线才不会冲过数据点。
-        slope[i] = delta[i - 1] * delta[i] <= 0.0 ? 0.0 : (delta[i - 1] + delta[i]) * 0.5;
-    }
-
-    for (std::size_t i = 0; i < spans; ++i) {
-        if (delta[i] == 0.0) {
-            slope[i] = 0.0;
-            slope[i + 1] = 0.0;
-            continue;
-        }
-        const double a = slope[i] / delta[i];
-        const double b = slope[i + 1] / delta[i];
-        const double sum = a * a + b * b;
-        if (sum > 9.0) {
-            const double scale = 3.0 / std::sqrt(sum);
-            slope[i] = scale * a * delta[i];
-            slope[i + 1] = scale * b * delta[i];
-        }
-    }
-
-    std::vector<Vec2d> out;
-    out.reserve(spans * perSpan + 1);
-    out.push_back(points.front());
-    const double step = 1.0 / static_cast<double>(perSpan);
-    for (std::size_t i = 0; i < spans; ++i) {
-        const double h = points[i + 1].x - points[i].x;
-        const double m0 = slope[i] * h;
-        const double m1 = slope[i + 1] * h;
-        for (std::size_t k = 1; k <= perSpan; ++k) {
-            const double t = step * static_cast<double>(k);
-            const double t2 = t * t;
-            const double t3 = t2 * t;
-            const double y = (2.0 * t3 - 3.0 * t2 + 1.0) * points[i].y +
-                             (t3 - 2.0 * t2 + t) * m0 +
-                             (-2.0 * t3 + 3.0 * t2) * points[i + 1].y + (t3 - t2) * m1;
-            out.push_back({points[i].x + h * t, y});
-        }
-    }
-    return out;
-}
-
-// ---------------------------------------------------------------- 饼图几何
-// sectorPolygon 已提升为 core 公共几何（Layout.h）——
-// SceneBuilder 建描述树和渲染层画扇形共用一份，保证描的画的同一个形状。
 
 // ---------------------------------------------------------------- 组装
 
@@ -393,7 +191,7 @@ std::unique_ptr<SceneNode> buildAxisTexts(const ChartLayout& layout, const Build
                 continue;
             }
             const TextMetrics metrics = measureText(ctx.lo, tick.label, fontSize);
-            const RectD frame = frameAt({tick.position, layout.plot.bottom() + gap}, metrics,
+            const RectD frame = alignTextFrame({tick.position, layout.plot.bottom() + gap}, metrics,
                                         TextAlign::Center, TextBaseline::Top);
             group->appendChild(makeText("axis.x.tick." + std::to_string(i), tick.label, frame,
                                         fontSize, ColorToken::Label, TextAlign::Center,
@@ -410,7 +208,7 @@ std::unique_ptr<SceneNode> buildAxisTexts(const ChartLayout& layout, const Build
                 continue;
             }
             const TextMetrics metrics = measureText(ctx.lo, tick.label, fontSize);
-            const RectD frame = frameAt({layout.plot.left() - gap, tick.position}, metrics,
+            const RectD frame = alignTextFrame({layout.plot.left() - gap, tick.position}, metrics,
                                         TextAlign::Right, TextBaseline::Middle);
             group->appendChild(makeText("axis.y.tick." + std::to_string(i), tick.label, frame,
                                         fontSize, ColorToken::Label, TextAlign::Right,
@@ -427,7 +225,7 @@ std::unique_ptr<SceneNode> buildAxisTexts(const ChartLayout& layout, const Build
                 continue;
             }
             const TextMetrics metrics = measureText(ctx.lo, tick.label, fontSize);
-            const RectD frame = frameAt({layout.plot.right() + gap, tick.position}, metrics,
+            const RectD frame = alignTextFrame({layout.plot.right() + gap, tick.position}, metrics,
                                         TextAlign::Left, TextBaseline::Middle);
             group->appendChild(makeText("axis.y2.tick." + std::to_string(i), tick.label, frame,
                                         fontSize, ColorToken::Label, TextAlign::Left,
@@ -448,7 +246,7 @@ std::unique_ptr<SceneNode> buildAxisTitles(const ChartLayout& layout, const Buil
         const TextMetrics metrics = measureText(ctx.lo, ctx.lo.x.title, fontSize);
         const double y = std::max(layout.plot.bottom() + fontSize * 0.75,
                                   ctx.canvas.y - ctx.lo.padding.bottom - fontSize * 0.75);
-        const RectD frame = frameAt({layout.plot.center().x, y}, metrics, TextAlign::Center,
+        const RectD frame = alignTextFrame({layout.plot.center().x, y}, metrics, TextAlign::Center,
                                     TextBaseline::Middle);
         group->appendChild(makeText("axis.x.title", ctx.lo.x.title, frame, fontSize,
                                     ColorToken::Label, TextAlign::Center,
@@ -534,7 +332,7 @@ std::unique_ptr<SceneNode> buildLineSeries(const Dataset& dataset, const ChartLa
                                            const BuildContext& ctx) {
     auto group = makeGroup("series", "series");
     const SceneBuildOptions& options = ctx.opt;
-    const std::vector<std::string> keys = makeSeriesKeys(dataset);
+    const std::vector<std::string> keys = dataset.seriesKeys();
 
     // 右轴系列从后往前数，和 boundsOfSeries 保持一致。
     const std::size_t secondaryFirst =
@@ -565,7 +363,7 @@ std::unique_ptr<SceneNode> buildLineSeries(const Dataset& dataset, const ChartLa
             const std::string segmentKey = keys[s] + ".seg." + std::to_string(k);
             const std::vector<Vec2d> curve =
                 options.curve == LineCurve::Monotone
-                    ? monotoneCurve(raw, options.curveSegments)
+                    ? math::monotoneCubicSpline(raw, options.curveSegments)
                     : raw;
 
             if (options.showArea && curve.size() >= 2) {
@@ -651,7 +449,7 @@ std::unique_ptr<SceneNode> buildBars(const std::vector<BarRect>& bars, const Cha
         const Vec2d anchor{bar.rect.center().x,
                            positive ? bar.rect.top() - 4.0 : bar.rect.bottom() + 4.0};
         const TextBaseline baseline = positive ? TextBaseline::Bottom : TextBaseline::Top;
-        const RectD frame = frameAt(anchor, metrics, TextAlign::Center, baseline);
+        const RectD frame = alignTextFrame(anchor, metrics, TextAlign::Center, baseline);
         labels->appendChild(makeText("bar.value." + std::to_string(bar.seriesIndex) + "." +
                                          std::to_string(bar.categoryIndex),
                                      text, frame, fontSize, ColorToken::Label,
@@ -663,7 +461,7 @@ std::unique_ptr<SceneNode> buildBars(const std::vector<BarRect>& bars, const Cha
 
 std::unique_ptr<SceneNode> buildChartTitle(const BuildContext& ctx, Vec2d topLeft) {
     const TextMetrics metrics = measureText(ctx.lo, ctx.opt.title, ctx.opt.titleFontSize);
-    const RectD frame = frameAt(topLeft, metrics, TextAlign::Left, TextBaseline::Top);
+    const RectD frame = alignTextFrame(topLeft, metrics, TextAlign::Left, TextBaseline::Top);
     return makeText("title", ctx.opt.title, frame, ctx.opt.titleFontSize, ColorToken::Title,
                     TextAlign::Left, TextBaseline::Top);
 }
@@ -675,7 +473,7 @@ std::unique_ptr<SceneNode> buildEmptyText(const BuildContext& ctx) {
     }
     const TextMetrics metrics = measureText(ctx.lo, ctx.opt.emptyText, ctx.opt.labelFontSize);
     const Vec2d center{ctx.canvas.x * 0.5, ctx.canvas.y * 0.5};
-    const RectD frame = frameAt(center, metrics, TextAlign::Center, TextBaseline::Middle);
+    const RectD frame = alignTextFrame(center, metrics, TextAlign::Center, TextBaseline::Middle);
     group->appendChild(makeText("empty.text", ctx.opt.emptyText, frame, ctx.opt.labelFontSize,
                                 ColorToken::EmptyText, TextAlign::Center,
                                 TextBaseline::Middle));
@@ -692,7 +490,7 @@ SceneBuildResult buildCartesian(const Dataset& dataset, Vec2d canvasSize,
                                 const LayoutOptions& layoutOptions,
                                 const SceneBuildOptions& options, ChartKind kind) {
     SceneBuildResult result;
-    result.issues = countIssues(dataset);
+    result.issues = dataset.inspectIssues();
 
     canvasSize = {std::max(0.0, canvasSize.x), std::max(0.0, canvasSize.y)};
 
@@ -717,8 +515,8 @@ SceneBuildResult buildCartesian(const Dataset& dataset, Vec2d canvasSize,
     const BarMode barMode = kind == ChartKind::Bar ? options.barMode : BarMode::None;
     const DataBounds bounds = computeBounds(dataset, barMode);
     const DataBounds secondaryBounds =
-        wantsSecondary ? boundsOfSeries(dataset, dataset.series.size() - secondaryCount,
-                                        secondaryCount)
+        wantsSecondary ? computeSeriesBounds(dataset, dataset.series.size() - secondaryCount,
+                                             secondaryCount)
                        : DataBounds{};
 
     result.layout = wantsSecondary ? computeLayout(canvasSize, bounds, secondaryBounds, lo)
@@ -782,60 +580,43 @@ SceneBuildResult buildBarChart(const Dataset& dataset, Vec2d canvasSize,
 
 // ---------------------------------------------------------------- 饼图
 
-SceneBuildResult buildPieChart(const PieChartData& data, Vec2d canvasSize,
-                               const SceneBuildOptions& options) {
-    SceneBuildResult result;
-    result.issues = countIssues(data);
-
+PieSlicesBuildResult buildPieSlices(const PieChartData& data, Vec2d canvasSize,
+                                    const PieStyle& style,
+                                    std::shared_ptr<const std::vector<Color>> seriesPalette) {
+    PieSlicesBuildResult result;
     canvasSize = {std::max(0.0, canvasSize.x), std::max(0.0, canvasSize.y)};
+    result.layout = computePieLayout(canvasSize, data, style.layout);
+    const PieLayout& layout = result.layout;
+    result.valid = layout.valid && !data.slices.empty();
 
-    LayoutOptions measureOptions;
-    measureOptions.measureText = options.textMeasure;
-
-    PieLayoutOptions pieOptions = options.pie;
-    if (options.showChartTitle && !options.title.empty()) {
-        pieOptions.padding.top +=
-            measureText(measureOptions, options.title, options.titleFontSize).height +
-            options.titleGap;
-    }
-
-    result.pie = computePieLayout(canvasSize, data, pieOptions);
-    const PieLayout& layout = result.pie;
-
-    const BuildContext ctx{canvasSize, measureOptions, options};
-
-    auto root = makeGroup("chart", "chart");
-    root->appendChild(makeRect("background", {0.0, 0.0, canvasSize.x, canvasSize.y},
-                               ColorToken::Background));
-
-    if (!layout.valid) {
-        root->appendChild(buildEmptyText(ctx));
-        result.root = std::move(root);
-        result.valid = false;
+    auto sectors = makeGroup("slices", "slices");
+    sectors->mutableStyle().seriesPalette = std::move(seriesPalette);
+    if (!result.valid) {
+        result.root = std::move(sectors);
         return result;
     }
 
-    auto sectors = makeGroup("slices", "slices");
-    // 缝隙描边：调用方给了直接色就用之，否则用背景色 token"擦"出缝（跟主题走）。
+    LayoutOptions measureOptions;
+    measureOptions.measureText = style.textMeasure;
+
     const Paint gapPaint =
-        options.pieGapColor.visible() ? Paint{options.pieGapColor} : Paint{ColorToken::Background};
-    // 标签文字：组件给了覆盖色用直接色，否则跟随主题。
-    const Paint labelPaint = options.pieLabelColorOverride.visible()
-                                 ? Paint{options.pieLabelColorOverride}
-                                 : Paint{ColorToken::Label};
+        style.gapColor.visible() ? Paint{style.gapColor} : Paint{ColorToken::Background};
+    const Paint labelPaint =
+        style.labelColor.visible() ? Paint{style.labelColor} : Paint{ColorToken::Label};
+
     for (const PieSector& sector : layout.sectors) {
         const std::size_t index = sector.sliceIndex;
-        std::vector<Vec2d> points = sectorPolygon(sector, layout, options.pieSegments);
+        std::vector<Vec2d> points = sectorPolygon(sector, layout, style.segments);
         sectors->appendChild(makePolygon("slice." + std::to_string(index), std::move(points),
                                          Paint::series(index), gapPaint,
-                                         std::max(0.0, options.pieSliceGap)));
+                                         std::max(0.0, style.gapWidth)));
 
-        if (!options.showPieLabels || index >= data.slices.size()) {
+        if (!style.showLabels || index >= data.slices.size()) {
             continue;
         }
         const PieSlice& slice = data.slices[index];
         std::string text = slice.label;
-        if (options.showPieValues) {
+        if (style.showValues) {
             char buffer[64];
             std::snprintf(buffer, sizeof(buffer), " %.1f%%", sector.fraction * 100.0);
             if (!text.empty()) {
@@ -847,7 +628,7 @@ SceneBuildResult buildPieChart(const PieChartData& data, Vec2d canvasSize,
             continue;
         }
 
-        const TextMetrics metrics = measureText(measureOptions, text, options.labelFontSize);
+        const TextMetrics metrics = measureText(measureOptions, text, style.labelFontSize);
         const double cosine = std::cos(sector.midAngle);
         TextAlign align = TextAlign::Center;
         double offset = 0.0;
@@ -860,21 +641,629 @@ SceneBuildResult buildPieChart(const PieChartData& data, Vec2d canvasSize,
         }
         const Vec2d anchor{sector.labelAnchor.x + offset, sector.labelAnchor.y};
         const RectD frame =
-            clampToCanvas(frameAt(anchor, metrics, align, TextBaseline::Middle), layout.canvas);
+            alignTextFrame(anchor, metrics, align, TextBaseline::Middle)
+                .confinedTo(layout.canvas, 2.0);
         sectors->appendChild(makeText("slice.label." + std::to_string(index), text, frame,
-                                      options.labelFontSize, labelPaint, align,
+                                      style.labelFontSize, labelPaint, align,
                                       TextBaseline::Middle));
     }
-    root->appendChild(std::move(sectors));
+
+    result.root = std::move(sectors);
+    return result;
+}
+
+void updatePieSliceExplode(SceneNode& slicesRoot, const PieLayout& layout,
+                           std::size_t sectorIndex, double radiusDelta, int segments) {
+    if (sectorIndex >= layout.sectors.size()) {
+        return;
+    }
+    const PieSector& sector = layout.sectors[sectorIndex];
+    SceneNode* sliceNode =
+        slicesRoot.findChildByKey("slice." + std::to_string(sector.sliceIndex));
+    if (sliceNode == nullptr) {
+        return;
+    }
+    PieLayout expanded = layout;
+    expanded.outerRadius += radiusDelta;
+    sliceNode->setPoints(sectorPolygon(sector, expanded, segments));
+}
+
+SceneBuildResult buildPieChart(const PieChartData& data, Vec2d canvasSize,
+                               const SceneBuildOptions& options) {
+    SceneBuildResult result;
+    result.issues = data.inspectIssues();
+
+    canvasSize = {std::max(0.0, canvasSize.x), std::max(0.0, canvasSize.y)};
+
+    LayoutOptions measureOptions;
+    measureOptions.measureText = options.textMeasure;
+
+    PieStyle pieStyle;
+    pieStyle.layout = options.pie;
+    if (options.showChartTitle && !options.title.empty()) {
+        pieStyle.layout.padding.top +=
+            measureText(measureOptions, options.title, options.titleFontSize).height +
+            options.titleGap;
+    }
+    pieStyle.showLabels = options.showPieLabels;
+    pieStyle.showValues = options.showPieValues;
+    pieStyle.labelFontSize = options.labelFontSize;
+    pieStyle.labelColor = options.pieLabelColorOverride;
+    pieStyle.gapWidth = options.pieSliceGap;
+    pieStyle.gapColor = options.pieGapColor;
+    pieStyle.segments = options.pieSegments;
+    pieStyle.textMeasure = options.textMeasure;
+
+    PieSlicesBuildResult builtSlices = buildPieSlices(data, canvasSize, pieStyle);
+    result.pie = builtSlices.layout;
+
+    const BuildContext ctx{canvasSize, measureOptions, options};
+
+    auto root = makeGroup("chart", "chart");
+    root->appendChild(makeRect("background", {0.0, 0.0, canvasSize.x, canvasSize.y},
+                               ColorToken::Background));
+
+    if (!result.pie.valid) {
+        root->appendChild(buildEmptyText(ctx));
+        result.root = std::move(root);
+        result.valid = false;
+        return result;
+    }
+
+    root->appendChild(std::move(builtSlices.root));
 
     if (options.showChartTitle && !options.title.empty()) {
-        root->appendChild(buildChartTitle(ctx, {pieOptions.padding.left,
+        root->appendChild(buildChartTitle(ctx, {pieStyle.layout.padding.left,
                                                 options.pie.padding.top}));
     }
 
     result.root = std::move(root);
     result.valid = true;
     return result;
+}
+
+// ---------------------------------------------------------------- SparkBar
+
+namespace {
+
+void applySparkBarHoverNode(SceneNode* hoverNode, const SparkBarLayout& layout,
+                            const SparkBarOptions& options, std::span<const Color> palette,
+                            std::size_t hoveredItem, std::size_t hoveredSegment) {
+    if (hoverNode == nullptr) {
+        return;
+    }
+    const bool show = options.hoverBorderWidth > 0.0 && hoveredItem < layout.items.size() &&
+                      hoveredSegment < layout.items[hoveredItem].segments.size();
+    hoverNode->setVisible(show);
+    if (!show) {
+        return;
+    }
+
+    const SparkBarSegment& seg = layout.items[hoveredItem].segments[hoveredSegment];
+    const double effRadius =
+        math::clamp(options.cornerRadius, 0.0, std::min(seg.rect.width, seg.rect.height) * 0.5);
+    const double half = options.hoverBorderWidth * 0.5;
+    const double expand = std::max(0.0, half - 0.25);
+    const RectD outline{seg.rect.x - expand, seg.rect.y - expand,
+                        seg.rect.width + expand * 2.0, seg.rect.height + expand * 2.0};
+    hoverNode->setFrame(outline);
+
+    SceneStyle style = hoverNode->style();
+    style.fill = Color{};
+    style.stroke = Color::mix(resolveSeriesColor(palette, seg.seriesIndex),
+                              Color::Rgb(0.0, 0.0, 0.0), 0.14);
+    style.strokeWidth = options.hoverBorderWidth;
+    style.cornerRadius = effRadius + expand;
+    hoverNode->setStyle(style);
+}
+
+}  // namespace
+
+SparkBarBuildResult buildSparkBar(const SparkBarData& data, Vec2d canvasSize,
+                                  const SparkBarOptions& options, std::span<const Color> palette,
+                                  std::size_t hoveredItem, std::size_t hoveredSegment) {
+    SparkBarBuildResult result;
+    result.layout = computeSparkBarLayout(canvasSize, data, options);
+    result.valid = result.layout.valid;
+
+    auto root = makeGroup("sparkbar.scene", "sparkbar.scene");
+    if (!result.valid) {
+        result.root = std::move(root);
+        return result;
+    }
+
+    const double radius = options.cornerRadius;
+    const double fontSize = options.tagFontSize > 0.0 ? options.tagFontSize : 12.0;
+    const Paint tagPaint =
+        options.tagColor.visible() ? Paint{options.tagColor} : Paint{ColorToken::Label};
+
+    // 1. 每条横向百分比堆叠条 + 上方行标题
+    for (std::size_t i = 0; i < result.layout.items.size(); ++i) {
+        const SparkBarItem& item = result.layout.items[i];
+        const std::string rowPrefix = "row." + std::to_string(i);
+
+        if (options.showTags && !item.tagRect.empty() && item.tagIndex < data.tags.size()) {
+            const std::string& tag = data.tags[item.tagIndex];
+            if (!tag.empty()) {
+                root->appendChild(makeText(rowPrefix + ".tag", tag, item.tagRect, fontSize,
+                                           tagPaint, TextAlign::Left, TextBaseline::Middle));
+            }
+        }
+
+        for (std::size_t s = 0; s < item.segments.size(); ++s) {
+            const SparkBarSegment& seg = item.segments[s];
+            root->appendChild(makeRect(rowPrefix + ".seg." + std::to_string(seg.seriesIndex),
+                                       seg.rect, resolveSeriesColor(palette, seg.seriesIndex),
+                                       radius));
+        }
+    }
+
+    // 2. 常驻 Hover 外描边节点（压在所有填充段之上，hover 移动时就地 O(1) 更新）
+    auto hoverNode = makeNode(NodeType::Rect, "hover.outline");
+    applySparkBarHoverNode(hoverNode.get(), result.layout, options, palette, hoveredItem,
+                           hoveredSegment);
+    root->appendChild(std::move(hoverNode));
+
+    // 3. 底部 GitHub 风格圆点 + 语言占比图例
+    for (const SparkBarLegendItem& leg : result.layout.legend) {
+        if (leg.seriesIndex >= data.series.size()) {
+            continue;
+        }
+        const std::string keySuffix = std::to_string(leg.seriesIndex);
+        auto dot = makeNode(NodeType::Ellipse, "legend.dot." + keySuffix);
+        dot->setFrame(leg.dotRect);
+        {
+            SceneStyle style;
+            style.fill = resolveSeriesColor(palette, leg.seriesIndex);
+            dot->setStyle(style);
+        }
+        root->appendChild(std::move(dot));
+
+        char pctBuf[32] = {};
+        std::snprintf(pctBuf, sizeof(pctBuf), "  %.1f%%", leg.fraction * 100.0);
+        root->appendChild(makeText("legend.text." + keySuffix,
+                                   data.series[leg.seriesIndex].name + pctBuf, leg.textRect,
+                                   fontSize, tagPaint, TextAlign::Left, TextBaseline::Middle));
+    }
+
+    result.root = std::move(root);
+    return result;
+}
+
+void updateSparkBarHover(SceneNode& sparkRoot, const SparkBarLayout& layout,
+                         const SparkBarOptions& options, std::span<const Color> palette,
+                         std::size_t hoveredItem, std::size_t hoveredSegment) {
+    applySparkBarHoverNode(sparkRoot.findChildByKey("hover.outline"), layout, options, palette,
+                           hoveredItem, hoveredSegment);
+}
+
+// ---------------------------------------------------------------- 表格
+
+namespace {
+
+void setRectFill(SceneNode& node, Paint fill, double cornerRadius = 0.0) {
+    SceneStyle style = node.style();
+    style.fill = std::move(fill);
+    style.stroke = Color{};
+    style.strokeWidth = 0.0;
+    style.cornerRadius = cornerRadius;
+    node.setStyle(style);
+}
+
+void applyTableTextStyle(SceneNode& node, Paint fill, double fontSize, TextAlign align) {
+    SceneStyle style = node.style();
+    style.fill = std::move(fill);
+    style.fontSize = fontSize;
+    style.textAlign = align;
+    style.textBaseline = TextBaseline::Middle;
+    style.maxLines = 1;
+    node.setStyle(style);
+}
+
+void applyTableHighlightNodes(SceneNode* hoverBg, SceneNode* selectedBg, SceneNode* selectedAccent,
+                              const TableLayout& layout, Vec2d canvasSize,
+                              const TableStyle& style, int hoveredPosition, int selectedPosition) {
+    const double rowWidth = std::max({0.0, canvasSize.x, layout.totalWidth});
+    const double rowHeight = style.metrics.rowHeight;
+
+    const bool showHover = hoveredPosition >= layout.firstRow &&
+                           hoveredPosition < layout.lastRow &&
+                           hoveredPosition != selectedPosition;
+    if (hoverBg != nullptr) {
+        hoverBg->setVisible(showHover);
+        if (showHover) {
+            hoverBg->setFrame(
+                {0.0, layout.rowContentTop(hoveredPosition), rowWidth, rowHeight});
+        }
+        setRectFill(*hoverBg, style.hoverRow);
+    }
+
+    const bool showSelected =
+        selectedPosition >= layout.firstRow && selectedPosition < layout.lastRow;
+    if (selectedBg != nullptr) {
+        selectedBg->setVisible(showSelected);
+        if (showSelected) {
+            selectedBg->setFrame(
+                {0.0, layout.rowContentTop(selectedPosition), rowWidth, rowHeight});
+        }
+        setRectFill(*selectedBg, style.selectedRow);
+    }
+    if (selectedAccent != nullptr) {
+        selectedAccent->setVisible(showSelected);
+        if (showSelected) {
+            selectedAccent->setFrame(
+                {0.0, layout.rowContentTop(selectedPosition), 3.0, rowHeight});
+        }
+        setRectFill(*selectedAccent, style.accent);
+    }
+}
+
+}  // namespace
+
+std::unique_ptr<SceneNode> buildTableChrome(const TableData& data, const TableState& state,
+                                            const TableLayout& layout, Vec2d canvasSize,
+                                            const TableStyle& style, double scrollX) {
+    const double width = std::max(0.0, canvasSize.x);
+    const double height = std::max(0.0, canvasSize.y);
+    const double headerHeight = style.metrics.headerHeight;
+    const double radius = style.radius;
+    const double pad = style.metrics.paddingX;
+
+    auto chrome = makeGroup("table.chrome", "table chrome");
+
+    // 卡片底 + 表头底
+    chrome->appendChild(makeRect("card", {0.0, 0.0, width, height}, style.background, radius));
+    chrome->appendChild(
+        makeRect("header.bg", {0.0, 0.0, width, headerHeight}, style.headerBackground, radius));
+    chrome->appendChild(makeRect("header.patch", {0.0, headerHeight - radius, width, radius},
+                                 style.headerBackground));
+
+    // 表头裁剪视口 + 跟随横向滚动平移的列标题组
+    auto headerViewport = makeGroup("header.viewport", "header viewport");
+    headerViewport->setClipRect({0.0, 0.0, width, headerHeight});
+
+    auto headerCells = makeGroup("header.cells", "header cells");
+    headerCells->setTranslation({-scrollX, 0.0});
+
+    for (std::size_t c = 0; c < layout.columns.size() && c < data.columns.size(); ++c) {
+        const TableColumn& column = data.columns[c];
+        const TableColumnSpan& span = layout.columns[c];
+        const bool sorted = state.isSortedBy(column.id);
+        const SortDir direction = state.directionOf(column.id);
+        const double reserved = column.sortable ? 14.0 : 0.0;
+
+        if (!column.title.empty()) {
+            auto text = makeNode(NodeType::Text, "header.cell." + std::to_string(c));
+            text->setText(column.title);
+            text->setFrame({span.x + pad, 0.0, std::max(0.0, span.width - 2.0 * pad - reserved),
+                            headerHeight});
+            applyTableTextStyle(*text, sorted ? style.headerActiveText : style.headerText,
+                                style.headerFontSize,
+                                column.isNumeric() ? TextAlign::Right : TextAlign::Left);
+            headerCells->appendChild(std::move(text));
+        }
+
+        if (sorted && direction != SortDir::None) {
+            const double cx = span.x + span.width - pad - 5.0;
+            const double cy = headerHeight * 0.5;
+            std::vector<Vec2d> triangle =
+                direction == SortDir::Asc
+                    ? std::vector<Vec2d>{Vec2d{cx - 4.0, cy + 2.5}, Vec2d{cx + 4.0, cy + 2.5},
+                                         Vec2d{cx, cy - 2.5}}
+                    : std::vector<Vec2d>{Vec2d{cx - 4.0, cy - 2.5}, Vec2d{cx + 4.0, cy - 2.5},
+                                         Vec2d{cx, cy + 2.5}};
+            headerCells->appendChild(makePolygon("header.sort." + std::to_string(c),
+                                                 std::move(triangle), style.accent, Color{}, 0.0));
+        }
+    }
+
+    headerViewport->appendChild(std::move(headerCells));
+    chrome->appendChild(std::move(headerViewport));
+    chrome->appendChild(
+        makeRect("header.line", {0.0, headerHeight - 1.0, width, 1.0}, style.border));
+
+    if (layout.rowCount <= 0) {
+        auto empty = makeNode(NodeType::Text, "empty");
+        empty->setText(data.columns.empty() ? "no data" : "no rows");
+        empty->setFrame({0.0, headerHeight, width, std::max(0.0, height - headerHeight)});
+        applyTableTextStyle(*empty, style.mutedText, style.cellFontSize, TextAlign::Center);
+        chrome->appendChild(std::move(empty));
+    }
+
+    return chrome;
+}
+
+std::unique_ptr<SceneNode> buildTableBody(const TableData& data, const TableState& state,
+                                          const TableLayout& layout, Vec2d canvasSize,
+                                          const TableStyle& style, int hoveredPosition) {
+    const double rowWidth = std::max({0.0, canvasSize.x, layout.totalWidth});
+    const double rowHeight = style.metrics.rowHeight;
+    const double pad = style.metrics.paddingX;
+
+    auto body = makeGroup("body", "table body");
+
+    auto hoverBg = makeNode(NodeType::Rect, "row.hover.bg");
+    auto selectedBg = makeNode(NodeType::Rect, "row.selected.bg");
+    auto selectedAccent = makeNode(NodeType::Rect, "row.selected.accent");
+    applyTableHighlightNodes(hoverBg.get(), selectedBg.get(), selectedAccent.get(), layout,
+                             canvasSize, style, hoveredPosition, state.selectedPosition());
+    body->appendChild(std::move(hoverBg));
+    body->appendChild(std::move(selectedBg));
+    body->appendChild(std::move(selectedAccent));
+
+    for (int position = layout.firstRow; position < layout.lastRow; ++position) {
+        const TableRow* dataRow = state.rowAt(position);
+        const std::string rowKey = (dataRow != nullptr && !dataRow->key.empty())
+                                       ? ("row." + dataRow->key)
+                                       : ("row." + std::to_string(position));
+        // 统一使用未扣滚动的逻辑内容坐标 y = position * rowHeight，
+        // 交由 ScrollWidget::content 的平移矩阵统一偏移（滚动时已有行无需重算坐标）
+        const double y = layout.rowContentTop(position);
+
+        body->appendChild(
+            makeRect(rowKey + ".grid", {0.0, y + rowHeight - 1.0, rowWidth, 1.0}, style.grid));
+
+        if (dataRow == nullptr) {
+            continue;
+        }
+
+        for (std::size_t c = 0; c < layout.columns.size() && c < data.columns.size(); ++c) {
+            const TableColumn& column = data.columns[c];
+            const TableCell* cell = dataRow->cell(c);
+            if (cell == nullptr || cell->missing()) {
+                continue;
+            }
+            const std::string value = formatTableCell(*cell, column);
+            if (value.empty()) {
+                continue;
+            }
+
+            const TableColumnSpan& span = layout.columns[c];
+            Paint color = style.rowText;
+            if (column.hasSignFormat()) {
+                const double number = cell->numericValue();
+                color = number > 0.0 ? style.positive
+                                     : (number < 0.0 ? style.negative : style.mutedText);
+            }
+
+            auto text = makeNode(NodeType::Text, rowKey + ".cell." + std::to_string(c));
+            text->setText(value);
+            text->setFrame({span.x + pad, y, std::max(0.0, span.width - 2.0 * pad), rowHeight});
+            applyTableTextStyle(*text, color, style.cellFontSize,
+                                column.isNumeric() ? TextAlign::Right : TextAlign::Left);
+            body->appendChild(std::move(text));
+        }
+    }
+
+    return body;
+}
+
+void updateTableHeaderScroll(SceneNode& chromeRoot, double scrollX) noexcept {
+    if (SceneNode* viewport = chromeRoot.findChildByKey("header.viewport")) {
+        if (SceneNode* cells = viewport->findChildByKey("header.cells")) {
+            cells->setTranslation({-scrollX, 0.0});
+        }
+    }
+}
+
+std::unique_ptr<SceneNode> buildTable(const TableData& data, const TableState& state,
+                                      const TableLayout& layout, Vec2d canvasSize,
+                                      const TableStyle& style, int hoveredPosition) {
+    const double width = std::max(0.0, canvasSize.x);
+    const double height = std::max(0.0, canvasSize.y);
+    const double headerHeight = style.metrics.headerHeight;
+    const double radius = style.radius;
+
+    auto plot = makeGroup("table", "table");
+    plot->appendChild(buildTableChrome(data, state, layout, canvasSize, style, 0.0));
+
+    auto bodyViewport = makeGroup("body.viewport", "body viewport");
+    bodyViewport->setTranslation({0.0, headerHeight});
+    bodyViewport->setClipRect({0.0, 0.0, width, std::max(0.0, height - headerHeight)});
+
+    auto body = buildTableBody(data, state, layout, canvasSize, style, hoveredPosition);
+    body->setTranslation({0.0, -layout.scroll});
+    bodyViewport->appendChild(std::move(body));
+    plot->appendChild(std::move(bodyViewport));
+
+    auto border = makeNode(NodeType::Rect, "frame.border");
+    border->setFrame({0.0, 0.0, width, height});
+    {
+        SceneStyle borderStyle;
+        borderStyle.stroke = style.border;
+        borderStyle.strokeWidth = 1.0;
+        borderStyle.cornerRadius = radius;
+        border->setStyle(borderStyle);
+    }
+    plot->appendChild(std::move(border));
+    return plot;
+}
+
+void updateTableHighlights(SceneNode& bodyOrTableRoot, const TableLayout& layout, Vec2d canvasSize,
+                           const TableStyle& style, int hoveredPosition, int selectedPosition) {
+    SceneNode* body = &bodyOrTableRoot;
+    if (body->key() != "body") {
+        if (SceneNode* direct = bodyOrTableRoot.findChildByKey("body")) {
+            body = direct;
+        } else if (SceneNode* vp = bodyOrTableRoot.findChildByKey("body.viewport")) {
+            body = vp->findChildByKey("body");
+        } else {
+            body = nullptr;
+        }
+    }
+    if (body == nullptr) {
+        return;
+    }
+    applyTableHighlightNodes(body->findChildByKey("row.hover.bg"),
+                             body->findChildByKey("row.selected.bg"),
+                             body->findChildByKey("row.selected.accent"), layout, canvasSize, style,
+                             hoveredPosition, selectedPosition);
+}
+
+TableBuildResult buildTable(const TableData& data, const TableState& state, Vec2d canvasSize,
+                            double scrollOffset, const TableStyle& style, int hoveredPosition,
+                            std::span<const double> cachedColumnWidths,
+                            const TextMeasureFn& textMeasure) {
+    TableBuildResult result;
+    if (cachedColumnWidths.size() == data.columns.size() && !data.columns.empty()) {
+        result.columnWidths.assign(cachedColumnWidths.begin(), cachedColumnWidths.end());
+    } else {
+        result.columnWidths =
+            measureTableColumns(data, canvasSize.x, style.headerFontSize, style.cellFontSize,
+                                style.metrics.paddingX, textMeasure);
+    }
+
+    TableLayoutInput input;
+    input.columnWidths = result.columnWidths;
+    input.rowCount = static_cast<int>(state.rowCount());
+    input.viewWidth = canvasSize.x;
+    input.viewHeight = std::max(0.0, canvasSize.y - style.metrics.headerHeight);
+    input.scrollOffset = scrollOffset;
+    input.metrics = style.metrics;
+    result.layout = computeTableLayout(input);
+
+    result.root = buildTable(data, state, result.layout, canvasSize, style, hoveredPosition);
+    return result;
+}
+
+// ---------------------------------------------------------------- 滚动条描述树
+
+namespace {
+
+[[nodiscard]] const Paint& pickThumbPaint(const ScrollBarStyle& style, bool hovered,
+                                          bool active) noexcept {
+    if (active && style.thumbActiveFill.visible()) {
+        return style.thumbActiveFill;
+    }
+    if (hovered && style.thumbHoverFill.visible()) {
+        return style.thumbHoverFill;
+    }
+    return style.thumbFill;
+}
+
+void applyScrollChromeNodes(SceneNode* vTrack, SceneNode* vThumb, SceneNode* hTrack,
+                            SceneNode* hThumb, SceneNode* corner, SceneNode* border,
+                            const ScrollLayout& layout, Vec2d containerSize,
+                            const ScrollBarStyle& style, const ScrollBarVisualState& state) {
+    const double barRadius = std::max(0.0, style.metrics.cornerRadius);
+
+    // 纵向滚动槽与滑块
+    const bool showV = layout.vertical.visible && !layout.vertical.track.empty();
+    if (vTrack != nullptr) {
+        vTrack->setVisible(showV && style.trackFill.visible());
+        if (showV) {
+            vTrack->setFrame(layout.vertical.track);
+        }
+        SceneStyle s = vTrack->style();
+        s.fill = style.trackFill;
+        s.cornerRadius = barRadius;
+        vTrack->setStyle(s);
+    }
+    if (vThumb != nullptr) {
+        const bool showVThumb = showV && !layout.vertical.thumb.empty();
+        vThumb->setVisible(showVThumb);
+        if (showVThumb) {
+            vThumb->setFrame(layout.vertical.thumb);
+        }
+        SceneStyle s = vThumb->style();
+        s.fill = pickThumbPaint(style, state.verticalHovered, state.verticalActive);
+        s.cornerRadius = barRadius;
+        s.cursor = layout.vertical.scrollable ? CursorShape::Pointer : CursorShape::Default;
+        vThumb->setStyle(s);
+    }
+
+    // 横向滚动槽与滑块
+    const bool showH = layout.horizontal.visible && !layout.horizontal.track.empty();
+    if (hTrack != nullptr) {
+        hTrack->setVisible(showH && style.trackFill.visible());
+        if (showH) {
+            hTrack->setFrame(layout.horizontal.track);
+        }
+        SceneStyle s = hTrack->style();
+        s.fill = style.trackFill;
+        s.cornerRadius = barRadius;
+        hTrack->setStyle(s);
+    }
+    if (hThumb != nullptr) {
+        const bool showHThumb = showH && !layout.horizontal.thumb.empty();
+        hThumb->setVisible(showHThumb);
+        if (showHThumb) {
+            hThumb->setFrame(layout.horizontal.thumb);
+        }
+        SceneStyle s = hThumb->style();
+        s.fill = pickThumbPaint(style, state.horizontalHovered, state.horizontalActive);
+        s.cornerRadius = barRadius;
+        s.cursor = layout.horizontal.scrollable ? CursorShape::Pointer : CursorShape::Default;
+        hThumb->setStyle(s);
+    }
+
+    // 右下角交汇区
+    if (corner != nullptr) {
+        const bool showCorner =
+            !layout.corner.empty() && style.cornerFill.visible();
+        corner->setVisible(showCorner);
+        if (showCorner) {
+            corner->setFrame(layout.corner);
+        }
+        SceneStyle s = corner->style();
+        s.fill = style.cornerFill;
+        corner->setStyle(s);
+    }
+
+    // 容器外边框
+    if (border != nullptr) {
+        const double w = std::max(0.0, containerSize.x);
+        const double h = std::max(0.0, containerSize.y);
+        const bool showBorder =
+            w > 0.0 && h > 0.0 && style.borderWidth > 0.0 && style.border.visible();
+        border->setVisible(showBorder);
+        if (showBorder) {
+            border->setFrame({0.0, 0.0, w, h});
+        }
+        SceneStyle s = border->style();
+        s.fill = Paint{};
+        s.stroke = style.border;
+        s.strokeWidth = style.borderWidth;
+        s.cornerRadius = std::max(0.0, style.containerRadius);
+        border->setStyle(s);
+    }
+}
+
+}  // namespace
+
+std::unique_ptr<SceneNode> buildScrollBars(const ScrollLayout& layout, Vec2d containerSize,
+                                           const ScrollBarStyle& style,
+                                           const ScrollBarVisualState& state) {
+    auto chrome = makeGroup("scroll.chrome", "scroll chrome");
+
+    auto vTrack = makeNode(NodeType::Rect, "scroll.v.track", "vertical scrollbar track");
+    auto vThumb = makeNode(NodeType::Rect, "scroll.v.thumb", "vertical scrollbar thumb");
+    auto hTrack = makeNode(NodeType::Rect, "scroll.h.track", "horizontal scrollbar track");
+    auto hThumb = makeNode(NodeType::Rect, "scroll.h.thumb", "horizontal scrollbar thumb");
+    auto corner = makeNode(NodeType::Rect, "scroll.corner", "scrollbar corner");
+    auto border = makeNode(NodeType::Rect, "scroll.border", "scroll container border");
+
+    applyScrollChromeNodes(vTrack.get(), vThumb.get(), hTrack.get(), hThumb.get(),
+                           corner.get(), border.get(), layout, containerSize, style, state);
+
+    chrome->appendChild(std::move(vTrack));
+    chrome->appendChild(std::move(vThumb));
+    chrome->appendChild(std::move(hTrack));
+    chrome->appendChild(std::move(hThumb));
+    chrome->appendChild(std::move(corner));
+    chrome->appendChild(std::move(border));
+    return chrome;
+}
+
+void updateScrollBars(SceneNode& chromeRoot, const ScrollLayout& layout, Vec2d containerSize,
+                      const ScrollBarStyle& style, const ScrollBarVisualState& state) {
+    applyScrollChromeNodes(chromeRoot.findChildByKey("scroll.v.track"),
+                           chromeRoot.findChildByKey("scroll.v.thumb"),
+                           chromeRoot.findChildByKey("scroll.h.track"),
+                           chromeRoot.findChildByKey("scroll.h.thumb"),
+                           chromeRoot.findChildByKey("scroll.corner"),
+                           chromeRoot.findChildByKey("scroll.border"),
+                           layout, containerSize, style, state);
 }
 
 // ---------------------------------------------------------------- 统一入口

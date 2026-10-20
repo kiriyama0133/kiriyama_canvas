@@ -76,6 +76,7 @@ public:
 
 protected:
     void onPress() override;
+    void onRelease(bool inside) override;
     void onUpdate(const FrameContext& ctx) override;
 
 private:

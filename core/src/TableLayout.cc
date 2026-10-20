@@ -5,6 +5,25 @@
 
 namespace kiriyama::core {
 
+double TableLayout::clampScroll(double offset) const noexcept {
+    return std::clamp(offset, 0.0, maxScroll);
+}
+
+double TableLayout::scrollToRevealRow(int position) const noexcept {
+    if (position < 0 || position >= rowCount) {
+        return scroll;
+    }
+    const double rowHeight = metrics.rowHeight;
+    const double top = static_cast<double>(position) * rowHeight;
+    double next = scroll;
+    if (top < next) {
+        next = top;
+    } else if (top + rowHeight > next + viewHeight) {
+        next = top + rowHeight - viewHeight;
+    }
+    return clampScroll(next);
+}
+
 RectD TableLayout::rowRect(const RectD& body, int position) const noexcept {
     return RectD{body.x, body.y + rowTop(position), body.width, metrics.rowHeight};
 }
@@ -122,6 +141,39 @@ void fitColumnWidths(std::vector<double>& widths, double available, double minWi
             width -= std::max(0.0, width - minWidth) / capacity * take;
         }
     }
+}
+
+std::vector<double> measureTableColumns(const TableData& data, double availableWidth,
+                                        double headerFontSize, double cellFontSize,
+                                        double paddingX, const TextMeasureFn& measure) {
+    std::vector<double> widths;
+    if (data.columns.empty()) {
+        return widths;
+    }
+
+    widths.reserve(data.columns.size());
+    for (std::size_t c = 0; c < data.columns.size(); ++c) {
+        const TableColumn& column = data.columns[c];
+        // 表头也算进宽度：否则排序箭头会把标题挤出去。
+        double width =
+            measureText(measure, column.title, headerFontSize).width + (column.sortable ? 14.0 : 0.0);
+        for (const TableRow& row : data.rows) {
+            const TableCell* cell = row.cell(c);
+            if (cell == nullptr || cell->missing()) {
+                continue;
+            }
+            width = std::max(width,
+                             measureText(measure, formatTableCell(*cell, column), cellFontSize).width);
+        }
+        width += 2.0 * paddingX;
+        width = std::max(width, column.minWidth);
+        // 单个超长文本不该吃掉半张表。
+        width = std::min(width, 280.0);
+        widths.push_back(width);
+    }
+
+    fitColumnWidths(widths, availableWidth, 56.0);
+    return widths;
 }
 
 }  // namespace kiriyama::core

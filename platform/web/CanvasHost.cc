@@ -100,39 +100,8 @@ public:
     }
 
     void onEvent(App& app, const SDL_Event& event) override {
-        // 键盘 / 滚轮只认"当前指针所在的表格"：多实例下不该所有表格一起滚。
-        TableWidget* table = tableUnderPointer(app);
-        if (table == nullptr) {
-            return;
-        }
-        if (event.type == SDL_EVENT_MOUSE_WHEEL) {
-            table->scrollBy(-static_cast<double>(event.wheel.y) * 36.0);
-            return;
-        }
-        if (event.type != SDL_EVENT_KEY_DOWN) {
-            return;
-        }
-        switch (event.key.key) {
-            case SDLK_DOWN:
-                table->moveSelection(1);
-                break;
-            case SDLK_UP:
-                table->moveSelection(-1);
-                break;
-            case SDLK_PAGEDOWN:
-                table->moveSelection(9);
-                break;
-            case SDLK_PAGEUP:
-                table->moveSelection(-9);
-                break;
-            case SDLK_HOME:
-                table->selectFirst();
-                break;
-            case SDLK_END:
-                table->selectLast();
-                break;
-            default:
-                break;
+        if (root_ != nullptr) {
+            (void)kiriyama::render::dispatchInputEvent(app, event, *root_, &controller_);
         }
     }
 
@@ -149,31 +118,14 @@ public:
 
         // 不可见的实例不 tick：否则它照样记 hover、弹气泡。
         for (const auto& [handle, instance] : instances_) {
-            if (instance->pie != nullptr && instance->pie->visible()) {
-                instance->pie->tickTree(ctx);
-            }
-            if (instance->spark != nullptr && instance->spark->visible()) {
-                instance->spark->tickTree(ctx);
-            }
-            if (instance->table != nullptr && instance->table->visible()) {
-                instance->table->tickTree(ctx);
+            if (kiriyama::scene::Widget* node = nodeOf(*instance);
+                node != nullptr && node->visible()) {
+                node->tickTree(ctx);
             }
         }
 
         // 主题是页面级状态：所有实例共用一份，切主题不重建任何场景树。
         const core::ChartTheme& theme = kiriyama::web::currentTheme();
-        const bool isDark = theme.background.r < 0.5f;
-        if (isDark != lastDark_) {
-            lastDark_ = isDark;
-            for (const auto& [handle, instance] : instances_) {
-                if (instance->table != nullptr) {
-                    instance->table->setStyle(makeTableStyle(isDark));
-                    if (instance->table->visible()) {
-                        instance->table->tickTree(ctx);
-                    }
-                }
-            }
-        }
 
         // 画布底色跟随当前主题（SparkBar 等透明底组件与多组件间距由此统一铺底）。
         app.painter().color(theme.background).clear();
@@ -207,28 +159,13 @@ public:
     }
 
 private:
-    [[nodiscard]] static TableStyle makeTableStyle(bool dark = false) {
+    [[nodiscard]] static TableStyle makeTableStyle() {
         TableStyle style;
         style.headerFontSize = 10.5;
         style.cellFontSize = 12.0;
         style.metrics.headerHeight = 36.0;
         style.metrics.rowHeight = 31.0;
         style.metrics.paddingX = 14.0;
-        if (dark) {
-            style.background = core::Color::Hex(0x18181A);
-            style.headerBackground = core::Color::Hex(0x202023);
-            style.headerText = core::Color::Hex(0x9A9890);
-            style.headerActiveText = core::Color::Hex(0xEAE8E1);
-            style.rowText = core::Color::Hex(0xEAE8E1);
-            style.mutedText = core::Color::Hex(0x706E68);
-            style.grid = core::Color::Hex(0x2A2A2E);
-            style.border = core::Color::Hex(0x323236);
-            style.hoverRow = core::Color::Hex(0x232327);
-            style.selectedRow = core::Color::Hex(0x1F3248);
-            style.accent = core::Color::Hex(0x6395DC);
-            style.positive = core::Color::Hex(0xE06055);
-            style.negative = core::Color::Hex(0x4CB782);
-        }
         return style;
     }
 
@@ -298,7 +235,7 @@ private:
                             text, Font{Font::builtinFace(), fontSize}, {});
                         return core::TextMetrics{layout.boxWidth, layout.height};
                     });
-                node->setStyle(makeTableStyle(lastDark_));
+                node->setStyle(makeTableStyle());
                 instance->table = node.get();
                 root_->appendChild(std::move(node));
                 break;
@@ -362,31 +299,14 @@ private:
         return found;
     }
 
-    [[nodiscard]] TableWidget* tableUnderPointer(App& app) const {
-        const int handle = instanceUnderPointer(app);
-        const auto it = instances_.find(handle);
-        if (it == instances_.end() || it->second->table == nullptr) {
-            return nullptr;
-        }
-        return it->second->table->visible() ? it->second->table : nullptr;
-    }
-
     void updateCursor(App& app) {
         auto cursor = kiriyama::core::CursorShape::Default;
         const int active = instanceUnderPointer(app);
         const auto it = instances_.find(active);
         if (it != instances_.end()) {
-            const Instance& instance = *it->second;
-            if (instance.pie != nullptr && instance.pie->visible() &&
-                instance.pie->hoveredIndex() != core::kInvalidIndex) {
-                cursor = kiriyama::core::CursorShape::Pointer;
-            }
-            if (instance.spark != nullptr && instance.spark->visible() &&
-                instance.spark->hovered()) {
-                cursor = kiriyama::core::CursorShape::Pointer;
-            }
-            if (instance.table != nullptr && instance.table->visible()) {
-                cursor = instance.table->cursorAt(app.pointer());
+            if (const kiriyama::scene::Widget* node = nodeOf(*it->second);
+                node != nullptr && node->visible()) {
+                cursor = node->cursorAt(app.pointer());
             }
         }
         app.setCursor(cursor);
@@ -396,7 +316,7 @@ private:
     /// 句柄 → 实例。有序，所以绘制顺序 = 挂载顺序（后面盖前面）。
     std::map<int, std::unique_ptr<Instance>> instances_{};
     std::unique_ptr<TooltipHost> tooltip_{};
-    bool lastDark_{false};
+    kiriyama::scene::InputController controller_{};
 };
 
 }  // namespace

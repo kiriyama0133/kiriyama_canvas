@@ -68,6 +68,12 @@ void Drag::onPress() {
     }
 }
 
+void Drag::onRelease(bool /*inside*/) {
+    if (active_) {
+        end(pointerPosition());
+    }
+}
+
 void Drag::onUpdate(const FrameContext& ctx) {
     if (!active_) {
         return;

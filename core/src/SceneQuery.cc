@@ -62,6 +62,9 @@ SceneNode* hitNode(SceneNode& node, const Vec2d& worldPoint, double tolerance) {
     }
 
     const Vec2d local = node.toLocal(worldPoint);
+    if (!node.clipRect().empty() && !node.clipRect().expanded(tolerance).contains(local)) {
+        return nullptr;
+    }
     // 剪枝：包围盒（含子树）都不含这个点，整棵跳过。
     // 注意不能因为 bounds.empty() 就提前退出——水平线 / 细条的包围盒高度为 0，
     // 它们恰恰是需要 tolerance 才点得中的那一类。

@@ -6,6 +6,7 @@ if(MSVC)
 endif()
 
 add_library(kiriyama_math STATIC
+    src/Curve.cc
     src/Easing.cc
     src/Spring.cc
     src/Ticks.cc

@@ -1,5 +1,7 @@
 #include "kiriyama/core/Table.h"
 
+#include <cstdio>
+
 namespace kiriyama::core {
 namespace {
 
@@ -180,6 +182,55 @@ bool isSortableColumn(const TableData& data, std::string_view columnId) noexcept
     return column != nullptr && column->sortable;
 }
 
+std::string formatTableCell(const TableCell& cell, const TableColumn& column) {
+    if (cell.missing()) {
+        return {};
+    }
+
+    char buffer[96];
+    const std::string& format = column.format;
+    const char* pattern = format.empty() ? nullptr : format.c_str();
+
+    switch (column.type) {
+        case CellType::Text: {
+            if (const auto* text = std::get_if<std::string>(&cell.value)) {
+                return *text;
+            }
+            return {};
+        }
+        case CellType::Number:
+        case CellType::Date: {
+            if (const auto* number = std::get_if<double>(&cell.value)) {
+                std::snprintf(buffer, sizeof(buffer), pattern ? pattern : "%.2f", *number);
+                return buffer;
+            }
+            if (const auto* integer = std::get_if<std::int64_t>(&cell.value)) {
+                std::snprintf(buffer, sizeof(buffer), pattern ? pattern : "%.0f",
+                              static_cast<double>(*integer));
+                return buffer;
+            }
+            return {};
+        }
+        case CellType::Integer: {
+            if (const auto* integer = std::get_if<std::int64_t>(&cell.value)) {
+                std::snprintf(buffer, sizeof(buffer), pattern ? pattern : "%lld",
+                              static_cast<long long>(*integer));
+                return buffer;
+            }
+            if (const auto* number = std::get_if<double>(&cell.value)) {
+                std::snprintf(buffer, sizeof(buffer), pattern ? pattern : "%.0f", *number);
+                return buffer;
+            }
+            return {};
+        }
+        case CellType::Bool: {
+            const auto* flag = std::get_if<bool>(&cell.value);
+            return (flag != nullptr && *flag) ? "yes" : "no";
+        }
+    }
+    return {};
+}
+
 // ---------------------------------------------------------------- TableState
 
 TableState::TableState(TableOptions options) : options_(options) {}
@@ -305,6 +356,37 @@ TableChange TableState::selectPosition(int position) {
     }
     const TableRow* row = rowAt(position);
     return row == nullptr ? clearSelection() : setSelection(row->key);
+}
+
+TableChange TableState::moveSelection(int delta) {
+    const int count = static_cast<int>(order_.size());
+    if (count <= 0 || delta == 0) {
+        TableChange change;
+        change.sort = sort_;
+        change.selectedPosition = selectedPos_;
+        change.selectedRowKey = selectedKey_;
+        return change;
+    }
+    int position = selectedPos_;
+    if (position < 0) {
+        position = delta > 0 ? -1 : count;
+    }
+    position = std::clamp(position + delta, 0, count - 1);
+    return selectPosition(position);
+}
+
+TableChange TableState::selectFirst() {
+    if (order_.empty()) {
+        return TableChange{};
+    }
+    return selectPosition(0);
+}
+
+TableChange TableState::selectLast() {
+    if (order_.empty()) {
+        return TableChange{};
+    }
+    return selectPosition(static_cast<int>(order_.size()) - 1);
 }
 
 TableChange TableState::clearSelection() {

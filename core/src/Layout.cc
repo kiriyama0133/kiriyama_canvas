@@ -263,6 +263,18 @@ TextMetrics defaultTextMeasure(std::string_view text, double fontSize) {
     return {width, fontSize * 1.25};
 }
 
+TextMetrics measureText(const TextMeasureFn& measure, std::string_view text, double fontSize) {
+    if (text.empty()) {
+        return {};
+    }
+    TextMetrics metrics =
+        measure ? measure(text, fontSize) : defaultTextMeasure(text, fontSize);
+    if (!(metrics.height > 0.0)) {
+        metrics.height = fontSize * 1.25;
+    }
+    return metrics;
+}
+
 // ---------------------------------------------------------------- 多轴对齐
 
 AlignedDomains alignYDomains(RangeD primary, RangeD secondary, int targetTickCount) noexcept {

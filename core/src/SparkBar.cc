@@ -215,4 +215,31 @@ SparkBarLayout computeSparkBarLayout(Vec2d size, const SparkBarData& data,
     return layout;
 }
 
+SparkBarPick hitTestSparkBar(const SparkBarLayout& layout, Vec2d localPoint) noexcept {
+    SparkBarPick pick;
+    for (std::size_t i = 0; i < layout.items.size(); ++i) {
+        const SparkBarItem& item = layout.items[i];
+        const bool onBar = !item.barRect.empty() && item.barRect.contains(localPoint);
+        const bool onTag = !item.tagRect.empty() && item.tagRect.contains(localPoint);
+        if (!onBar && !onTag) {
+            continue;
+        }
+        pick.item = i;
+        for (std::size_t s = 0; s < item.segments.size(); ++s) {
+            if (item.segments[s].rect.contains(localPoint)) {
+                pick.segment = s;
+                break;
+            }
+        }
+        return pick;
+    }
+    for (const SparkBarLegendItem& leg : layout.legend) {
+        if (!leg.hitRect.empty() && leg.hitRect.contains(localPoint)) {
+            pick.legendSeries = leg.seriesIndex;
+            return pick;
+        }
+    }
+    return pick;
+}
+
 }  // namespace kiriyama::core

@@ -18,6 +18,7 @@
 #include "Axis.h"
 #include "Data.h"
 #include "Geometry.h"
+#include "SceneStyle.h"
 
 namespace kiriyama::core {
 
@@ -47,6 +48,29 @@ using TextMeasureFn = std::function<TextMetrics(std::string_view text, double fo
 
 /// 无字体环境下的估算：ASCII 约 0.6em，空格/标点 0.3em，UTF-8 多字节字符按 1em。
 [[nodiscard]] TextMetrics defaultTextMeasure(std::string_view text, double fontSize);
+
+/// 统一文本测量入口：优先调用自定义 measure 回调，为空时回退 defaultTextMeasure，并保证行高有效。
+[[nodiscard]] TextMetrics measureText(const TextMeasureFn& measure, std::string_view text,
+                                      double fontSize);
+
+/// 根据锚点坐标与对齐方式（水平 Left/Center/Right，垂直 Top/Middle/Bottom）计算文本排版矩形。
+[[nodiscard]] constexpr RectD alignTextFrame(Vec2d anchor, const TextMetrics& metrics,
+                                             TextAlign horizontal,
+                                             TextBaseline vertical) noexcept {
+    double x = anchor.x;
+    if (horizontal == TextAlign::Center) {
+        x -= metrics.width * 0.5;
+    } else if (horizontal == TextAlign::Right) {
+        x -= metrics.width;
+    }
+    double y = anchor.y;
+    if (vertical == TextBaseline::Middle) {
+        y -= metrics.height * 0.5;
+    } else if (vertical == TextBaseline::Bottom) {
+        y -= metrics.height;
+    }
+    return {x, y, metrics.width, metrics.height};
+}
 
 // ---------------------------------------------------------------- 选项
 

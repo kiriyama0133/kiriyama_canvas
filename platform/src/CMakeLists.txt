@@ -22,7 +22,9 @@ target_link_libraries(kiriyama_text PUBLIC kiriyama_core)
 add_library(kiriyama_scene STATIC
     src/Animation.cc
     src/Drag.cc
+    src/InputController.cc
     src/PieChart.cc
+    src/ScrollWidget.cc
     src/SparkBar.cc
     src/TableWidget.cc
     src/TooltipTarget.cc

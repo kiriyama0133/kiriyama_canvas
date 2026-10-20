@@ -53,6 +53,43 @@ void Dataset::sanitize(DataIssues* issues) {
     }
 }
 
+DataIssues Dataset::inspectIssues() const noexcept {
+    DataIssues issues;
+    for (const Series& one : series) {
+        if (one.points.empty()) {
+            ++issues.emptySeries;
+            continue;
+        }
+        for (const DataPoint& point : one.points) {
+            if (!point.hasValue) {
+                ++issues.nullValues;
+            } else if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+                ++issues.nonFiniteValues;
+            }
+        }
+    }
+    return issues;
+}
+
+std::vector<std::string> Dataset::seriesKeys() const {
+    std::vector<std::string> keys;
+    keys.reserve(series.size());
+    for (std::size_t i = 0; i < series.size(); ++i) {
+        const std::string& name = series[i].name;
+        bool unique = !name.empty();
+        if (unique) {
+            for (std::size_t j = 0; j < series.size(); ++j) {
+                if (j != i && series[j].name == name) {
+                    unique = false;
+                    break;
+                }
+            }
+        }
+        keys.push_back(unique ? "series:" + name : "series#" + std::to_string(i));
+    }
+    return keys;
+}
+
 // ---------------------------------------------------------------- 原始数据接入
 
 Dataset makeCategoryDataset(std::vector<std::string> categories,
@@ -211,6 +248,28 @@ DataBounds computeBounds(const Dataset& dataset, BarMode mode) {
     return bounds;
 }
 
+DataBounds computeSeriesBounds(const Dataset& dataset, std::size_t firstSeries,
+                               std::size_t seriesCount) noexcept {
+    DataBounds bounds;
+    for (std::size_t i = firstSeries;
+         i < firstSeries + seriesCount && i < dataset.series.size(); ++i) {
+        for (const DataPoint& point : dataset.series[i].points) {
+            if (!point.valid()) {
+                continue;
+            }
+            if (!bounds.hasData) {
+                bounds.x = RangeD{point.x, point.x};
+                bounds.y = RangeD{point.y, point.y};
+                bounds.hasData = true;
+            } else {
+                bounds.x.expandToInclude(point.x);
+                bounds.y.expandToInclude(point.y);
+            }
+        }
+    }
+    return bounds;
+}
+
 // ---------------------------------------------------------------- 饼图
 
 void PieChartData::sanitize(DataIssues* issues) {
@@ -230,6 +289,18 @@ void PieChartData::sanitize(DataIssues* issues) {
     if (issues != nullptr) {
         issues->merge(local);
     }
+}
+
+DataIssues PieChartData::inspectIssues() const noexcept {
+    DataIssues issues;
+    for (const PieSlice& slice : slices) {
+        if (!std::isfinite(slice.value)) {
+            ++issues.nonFiniteValues;
+        } else if (slice.value < 0.0) {
+            ++issues.negativeValues;
+        }
+    }
+    return issues;
 }
 
 double PieChartData::total() const noexcept {

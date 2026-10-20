@@ -83,10 +83,18 @@ ChartTheme ChartTheme::Dark() {
 }
 
 Color ChartTheme::seriesColor(std::size_t index) const {
-    if (!series.empty()) {
-        return series[index % series.size()];
+    return resolveSeriesColor(series, index);
+}
+
+Color resolveSeriesColor(std::span<const Color> palette, std::size_t seriesIndex) noexcept {
+    if (!palette.empty()) {
+        const Color candidate = palette[seriesIndex % palette.size()];
+        if (candidate.visible()) {
+            return candidate;
+        }
     }
-    return defaultSeriesPalette()[index % defaultSeriesPalette().size()];
+    const auto& fallback = defaultSeriesPalette();
+    return fallback.empty() ? Color::Hex(0x85B7EB) : fallback[seriesIndex % fallback.size()];
 }
 
 }  // namespace kiriyama::core
