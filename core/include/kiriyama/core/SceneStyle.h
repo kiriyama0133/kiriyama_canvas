@@ -17,6 +17,10 @@ namespace kiriyama::core {
 
 enum class TextAlign : std::uint8_t { Left, Center, Right };
 enum class TextBaseline : std::uint8_t { Top, Middle, Bottom };
+enum class TextDirection : std::uint8_t {
+    Horizontal,  ///< 水平横排（默认）
+    Vertical,    ///< 垂直竖排（按 UTF-8 字符逐行堆叠）
+};
 
 /// 光标形状。节点上写的是"命中我时想要什么光标"：
 ///   Inherit（默认）不是一种形状，而是"跟随父节点"；

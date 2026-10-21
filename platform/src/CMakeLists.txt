@@ -23,6 +23,7 @@ add_library(kiriyama_scene STATIC
     src/Animation.cc
     src/Drag.cc
     src/InputController.cc
+    src/LineChart.cc
     src/PieChart.cc
     src/ScrollWidget.cc
     src/SparkBar.cc

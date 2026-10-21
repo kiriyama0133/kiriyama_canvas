@@ -176,6 +176,34 @@ std::unique_ptr<SceneNode> buildGrid(const ChartLayout& layout, const BuildConte
     return group;
 }
 
+std::unique_ptr<SceneNode> makeAxisTickText(std::string key, std::string_view rawLabel,
+                                            Vec2d anchor, const AxisOptions& axisOpt,
+                                            const BuildContext& ctx, TextAlign horizontal,
+                                            TextBaseline vertical) {
+    const double fontSize = axisOpt.labelFontSize;
+    const Paint paint =
+        axisOpt.labelColor.visible() ? Paint{axisOpt.labelColor} : Paint{ColorToken::Label};
+    const std::string text = formatTextDirection(rawLabel, axisOpt.labelDirection);
+    const TextMetrics metrics = measureText(ctx.lo, text, fontSize);
+    const TextAlign align =
+        axisOpt.labelDirection == TextDirection::Vertical ? TextAlign::Center : horizontal;
+
+    if (std::abs(axisOpt.labelAngle) <= 1e-6) {
+        const RectD frame = alignTextFrame(anchor, metrics, horizontal, vertical);
+        return makeText(std::move(key), text, frame, fontSize, paint, align, vertical);
+    }
+
+    const TextMetrics rotMetrics = rotatedTextMetrics(metrics, axisOpt.labelAngle);
+    const RectD outerFrame = alignTextFrame(anchor, rotMetrics, horizontal, vertical);
+    const Vec2d center = outerFrame.center();
+    auto node = makeText(std::move(key), text, {0.0, 0.0, metrics.width, metrics.height},
+                         fontSize, paint, align, TextBaseline::Middle);
+    node->setTransform(Affine2D::Translation(center) *
+                       Affine2D::Rotation(axisOpt.labelAngle) *
+                       Affine2D::Translation({-metrics.width * 0.5, -metrics.height * 0.5}));
+    return node;
+}
+
 std::unique_ptr<SceneNode> buildAxisTexts(const ChartLayout& layout, const BuildContext& ctx) {
     auto group = makeGroup("axis.labels", "axis labels");
     if (!ctx.opt.showAxisLabels) {
@@ -183,53 +211,44 @@ std::unique_ptr<SceneNode> buildAxisTexts(const ChartLayout& layout, const Build
     }
 
     if (layout.xAxis.visible) {
-        const double fontSize = ctx.lo.x.labelFontSize;
         const double gap = ctx.lo.x.labelGap;
         for (std::size_t i = 0; i < layout.xAxis.ticks.size(); ++i) {
             const TickMark& tick = layout.xAxis.ticks[i];
             if (tick.label.empty()) {
                 continue;
             }
-            const TextMetrics metrics = measureText(ctx.lo, tick.label, fontSize);
-            const RectD frame = alignTextFrame({tick.position, layout.plot.bottom() + gap}, metrics,
-                                        TextAlign::Center, TextBaseline::Top);
-            group->appendChild(makeText("axis.x.tick." + std::to_string(i), tick.label, frame,
-                                        fontSize, ColorToken::Label, TextAlign::Center,
-                                        TextBaseline::Top));
+            group->appendChild(makeAxisTickText("axis.x.tick." + std::to_string(i), tick.label,
+                                                {tick.position, layout.plot.bottom() + gap},
+                                                ctx.lo.x, ctx, TextAlign::Center,
+                                                TextBaseline::Top));
         }
     }
 
     if (layout.yAxis.visible) {
-        const double fontSize = ctx.lo.y.labelFontSize;
         const double gap = ctx.lo.y.labelGap;
         for (std::size_t i = 0; i < layout.yAxis.ticks.size(); ++i) {
             const TickMark& tick = layout.yAxis.ticks[i];
             if (tick.label.empty()) {
                 continue;
             }
-            const TextMetrics metrics = measureText(ctx.lo, tick.label, fontSize);
-            const RectD frame = alignTextFrame({layout.plot.left() - gap, tick.position}, metrics,
-                                        TextAlign::Right, TextBaseline::Middle);
-            group->appendChild(makeText("axis.y.tick." + std::to_string(i), tick.label, frame,
-                                        fontSize, ColorToken::Label, TextAlign::Right,
-                                        TextBaseline::Middle));
+            group->appendChild(makeAxisTickText("axis.y.tick." + std::to_string(i), tick.label,
+                                                {layout.plot.left() - gap, tick.position},
+                                                ctx.lo.y, ctx, TextAlign::Right,
+                                                TextBaseline::Middle));
         }
     }
 
     if (layout.hasSecondaryY && layout.secondaryYAxis.visible) {
-        const double fontSize = ctx.lo.secondaryY.labelFontSize;
         const double gap = ctx.lo.plotGap;
         for (std::size_t i = 0; i < layout.secondaryYAxis.ticks.size(); ++i) {
             const TickMark& tick = layout.secondaryYAxis.ticks[i];
             if (tick.label.empty()) {
                 continue;
             }
-            const TextMetrics metrics = measureText(ctx.lo, tick.label, fontSize);
-            const RectD frame = alignTextFrame({layout.plot.right() + gap, tick.position}, metrics,
-                                        TextAlign::Left, TextBaseline::Middle);
-            group->appendChild(makeText("axis.y2.tick." + std::to_string(i), tick.label, frame,
-                                        fontSize, ColorToken::Label, TextAlign::Left,
-                                        TextBaseline::Middle));
+            group->appendChild(makeAxisTickText("axis.y2.tick." + std::to_string(i), tick.label,
+                                                {layout.plot.right() + gap, tick.position},
+                                                ctx.lo.secondaryY, ctx, TextAlign::Left,
+                                                TextBaseline::Middle));
         }
     }
     return group;
@@ -243,38 +262,64 @@ std::unique_ptr<SceneNode> buildAxisTitles(const ChartLayout& layout, const Buil
 
     if (layout.xAxis.visible && !ctx.lo.x.title.empty()) {
         const double fontSize = ctx.lo.x.titleFontSize;
-        const TextMetrics metrics = measureText(ctx.lo, ctx.lo.x.title, fontSize);
+        const Paint paint = ctx.lo.x.titleColor.visible() ? Paint{ctx.lo.x.titleColor}
+                                                          : Paint{ColorToken::Label};
+        const std::string text = formatTextDirection(ctx.lo.x.title, ctx.lo.x.titleDirection);
+        const TextMetrics metrics = measureText(ctx.lo, text, fontSize);
         const double y = std::max(layout.plot.bottom() + fontSize * 0.75,
                                   ctx.canvas.y - ctx.lo.padding.bottom - fontSize * 0.75);
-        const RectD frame = alignTextFrame({layout.plot.center().x, y}, metrics, TextAlign::Center,
-                                    TextBaseline::Middle);
-        group->appendChild(makeText("axis.x.title", ctx.lo.x.title, frame, fontSize,
-                                    ColorToken::Label, TextAlign::Center,
-                                    TextBaseline::Middle));
+        if (std::abs(ctx.lo.x.titleAngle) <= 1e-6) {
+            const RectD frame = alignTextFrame({layout.plot.center().x, y}, metrics,
+                                               TextAlign::Center, TextBaseline::Middle);
+            group->appendChild(makeText("axis.x.title", text, frame, fontSize, paint,
+                                        TextAlign::Center, TextBaseline::Middle));
+        } else {
+            const Vec2d center{layout.plot.center().x, y};
+            auto node = makeText("axis.x.title", text,
+                                 {0.0, 0.0, metrics.width, metrics.height}, fontSize, paint,
+                                 TextAlign::Center, TextBaseline::Middle);
+            node->setTransform(Affine2D::Translation(center) *
+                               Affine2D::Rotation(ctx.lo.x.titleAngle) *
+                               Affine2D::Translation({-metrics.width * 0.5, -metrics.height * 0.5}));
+            group->appendChild(std::move(node));
+        }
     }
 
     if (layout.yAxis.visible && !ctx.lo.y.title.empty()) {
         const double fontSize = ctx.lo.y.titleFontSize;
-        const TextMetrics metrics = measureText(ctx.lo, ctx.lo.y.title, fontSize);
-        // 旋转 -90°：frame 放在原点，再把盒子中心搬到目标位置。
+        const Paint paint = ctx.lo.y.titleColor.visible() ? Paint{ctx.lo.y.titleColor}
+                                                          : Paint{ColorToken::Label};
+        const std::string text = formatTextDirection(ctx.lo.y.title, ctx.lo.y.titleDirection);
+        const TextMetrics metrics = measureText(ctx.lo, text, fontSize);
         const Vec2d center{ctx.lo.padding.left + fontSize * 0.75, layout.plot.center().y};
-        auto node = makeText("axis.y.title", ctx.lo.y.title,
-                             {0.0, 0.0, metrics.width, metrics.height}, fontSize,
-                             ColorToken::Label, TextAlign::Center, TextBaseline::Middle);
-        node->setTransform(Affine2D::Translation(center) * Affine2D::Rotation(-kHalfPi) *
+        const double baseAngle =
+            ctx.lo.y.titleDirection == TextDirection::Vertical ? 0.0 : -kHalfPi;
+        const double angle = baseAngle + ctx.lo.y.titleAngle;
+        auto node = makeText("axis.y.title", text,
+                             {0.0, 0.0, metrics.width, metrics.height}, fontSize, paint,
+                             TextAlign::Center, TextBaseline::Middle);
+        node->setTransform(Affine2D::Translation(center) * Affine2D::Rotation(angle) *
                            Affine2D::Translation({-metrics.width * 0.5, -metrics.height * 0.5}));
         group->appendChild(std::move(node));
     }
 
     if (layout.hasSecondaryY && ctx.lo.secondaryY.visible && !ctx.lo.secondaryY.title.empty()) {
         const double fontSize = ctx.lo.secondaryY.titleFontSize;
-        const TextMetrics metrics = measureText(ctx.lo, ctx.lo.secondaryY.title, fontSize);
+        const Paint paint = ctx.lo.secondaryY.titleColor.visible()
+                                ? Paint{ctx.lo.secondaryY.titleColor}
+                                : Paint{ColorToken::Label};
+        const std::string text =
+            formatTextDirection(ctx.lo.secondaryY.title, ctx.lo.secondaryY.titleDirection);
+        const TextMetrics metrics = measureText(ctx.lo, text, fontSize);
         const Vec2d center{ctx.canvas.x - ctx.lo.padding.right - fontSize * 0.75,
                            layout.plot.center().y};
-        auto node = makeText("axis.y2.title", ctx.lo.secondaryY.title,
-                             {0.0, 0.0, metrics.width, metrics.height}, fontSize,
-                             ColorToken::Label, TextAlign::Center, TextBaseline::Middle);
-        node->setTransform(Affine2D::Translation(center) * Affine2D::Rotation(kHalfPi) *
+        const double baseAngle =
+            ctx.lo.secondaryY.titleDirection == TextDirection::Vertical ? 0.0 : kHalfPi;
+        const double angle = baseAngle + ctx.lo.secondaryY.titleAngle;
+        auto node = makeText("axis.y2.title", text,
+                             {0.0, 0.0, metrics.width, metrics.height}, fontSize, paint,
+                             TextAlign::Center, TextBaseline::Middle);
+        node->setTransform(Affine2D::Translation(center) * Affine2D::Rotation(angle) *
                            Affine2D::Translation({-metrics.width * 0.5, -metrics.height * 0.5}));
         group->appendChild(std::move(node));
     }
@@ -497,6 +542,9 @@ SceneBuildResult buildCartesian(const Dataset& dataset, Vec2d canvasSize,
     LayoutOptions lo = layoutOptions;
     if (kind == ChartKind::Bar && lo.categoryLabels.empty()) {
         lo.categoryLabels = dataset.categories;
+    } else if (kind == ChartKind::Line && lo.x.tickLabels.empty() &&
+               lo.categoryLabels.empty() && !dataset.categories.empty()) {
+        lo.x.tickLabels = dataset.categories;
     }
 
     const std::size_t secondaryCount =

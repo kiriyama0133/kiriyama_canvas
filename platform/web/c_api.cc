@@ -92,6 +92,25 @@ struct TableState {
     bool dirty{false};
 };
 
+struct LineState {
+    core::Dataset data;
+    kiriyama::scene::LineChartConfig config{};
+    std::vector<Color> palette{};
+    bool dataDirty{false};
+    bool configDirty{false};
+
+    /// begin / add_* / commit 的临时缓冲。
+    std::vector<std::string> xLabelsBuf{};
+    std::vector<std::string> yLabelsBuf{};
+    std::vector<core::Series> seriesBuf{};
+    std::vector<Color> colorsBuf{};
+    core::Series currentSeries{};
+    bool seriesOpen{false};
+
+    int hoveredSeries{-1};
+    int hoveredPoint{-1};
+};
+
 /// 每个实例一份气泡配置（两个饼图可以一个贴上一个贴右）。
 struct TooltipState {
     double arrowWidth{0.0};
@@ -110,6 +129,7 @@ struct Slot {
     PieState pie;
     SparkState spark;
     TableState table;
+    LineState line;
     TooltipState tip;
 };
 
@@ -137,6 +157,9 @@ core::ChartTheme gTheme = core::ChartTheme::Light();
     }
     if (type == "table") {
         return Component::Table;
+    }
+    if (type == "line") {
+        return Component::Line;
     }
     return std::nullopt;
 }
@@ -681,6 +704,272 @@ KIRIYAMA_KEEP void kiriyama_table_load(int handle, const char* text) {
     slot->table.dirty = true;
 }
 
+// ================================================================ LineChart · 数据
+
+KIRIYAMA_KEEP void kiriyama_line_begin(int handle) {
+    Slot* slot = findSlot(handle);
+    if (slot == nullptr) {
+        return;
+    }
+    LineState& line = slot->line;
+    line.xLabelsBuf.clear();
+    line.yLabelsBuf.clear();
+    line.seriesBuf.clear();
+    line.colorsBuf.clear();
+    line.currentSeries = {};
+    line.seriesOpen = false;
+}
+
+KIRIYAMA_KEEP void kiriyama_line_add_x_label(int handle, const char* label) {
+    if (Slot* slot = findSlot(handle); slot != nullptr && label != nullptr) {
+        slot->line.xLabelsBuf.emplace_back(label);
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_add_y_label(int handle, const char* label) {
+    if (Slot* slot = findSlot(handle); slot != nullptr && label != nullptr) {
+        slot->line.yLabelsBuf.emplace_back(label);
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_begin_series(int handle, const char* name, double rgb) {
+    Slot* slot = findSlot(handle);
+    if (slot == nullptr) {
+        return;
+    }
+    LineState& line = slot->line;
+    line.currentSeries = {};
+    line.currentSeries.name = name != nullptr ? name : "";
+    line.colorsBuf.push_back(colorFromRgb(rgb));
+    line.seriesOpen = true;
+}
+
+KIRIYAMA_KEEP void kiriyama_line_add_point(int handle, double x, double y) {
+    Slot* slot = findSlot(handle);
+    if (slot == nullptr || !slot->line.seriesOpen) {
+        return;
+    }
+    if (std::isfinite(x) && std::isfinite(y)) {
+        slot->line.currentSeries.addPoint(x, y);
+    } else {
+        slot->line.currentSeries.addNull(std::isfinite(x) ? x : 0.0);
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_end_series(int handle) {
+    Slot* slot = findSlot(handle);
+    if (slot == nullptr || !slot->line.seriesOpen) {
+        return;
+    }
+    LineState& line = slot->line;
+    line.seriesBuf.push_back(std::move(line.currentSeries));
+    line.currentSeries = {};
+    line.seriesOpen = false;
+}
+
+KIRIYAMA_KEEP void kiriyama_line_commit(int handle) {
+    Slot* slot = findSlot(handle);
+    if (slot == nullptr) {
+        return;
+    }
+    LineState& line = slot->line;
+    if (line.seriesOpen) {
+        line.seriesBuf.push_back(std::move(line.currentSeries));
+        line.currentSeries = {};
+        line.seriesOpen = false;
+    }
+    line.data.categories = line.xLabelsBuf;
+    line.data.series = std::move(line.seriesBuf);
+    line.config.layout.x.tickLabels = std::move(line.xLabelsBuf);
+    line.config.layout.y.tickLabels = std::move(line.yLabelsBuf);
+
+    bool hasCustomColor = false;
+    for (const Color& c : line.colorsBuf) {
+        if (c.visible()) {
+            hasCustomColor = true;
+            break;
+        }
+    }
+    if (hasCustomColor) {
+        const auto& defaults = core::defaultSeriesPalette();
+        line.palette.clear();
+        line.palette.reserve(line.colorsBuf.size());
+        for (std::size_t i = 0; i < line.colorsBuf.size(); ++i) {
+            if (line.colorsBuf[i].visible()) {
+                line.palette.push_back(line.colorsBuf[i]);
+            } else if (!defaults.empty()) {
+                line.palette.push_back(defaults[i % defaults.size()]);
+            }
+        }
+    } else {
+        line.palette.clear();
+    }
+
+    line.xLabelsBuf.clear();
+    line.yLabelsBuf.clear();
+    line.seriesBuf.clear();
+    line.colorsBuf.clear();
+    line.dataDirty = true;
+    line.configDirty = true;
+}
+
+// ================================================================ LineChart · 配置与样式
+
+KIRIYAMA_KEEP void kiriyama_line_set_title(int handle, const char* title) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.title = title != nullptr ? title : "";
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_curve(int handle, double monotone) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.curve =
+            monotone != 0.0 ? core::LineCurve::Monotone : core::LineCurve::Linear;
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_line_width(int handle, double pixels) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.lineWidth = std::max(0.0, pixels);
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_show_area(int handle, double enabled) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.showArea = enabled != 0.0;
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_area_opacity(int handle, double opacity) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.areaOpacity = kiriyama::math::saturate(opacity);
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_show_grid(int handle, double enabled) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.showGrid = enabled != 0.0;
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_point_radius(int handle, double pixels) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.pointStyle.radius = std::max(0.0, pixels);
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_hover_point_radius(int handle, double pixels) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.pointStyle.hoverRadius = std::max(0.0, pixels);
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_halo_radius(int handle, double pixels) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.pointStyle.haloRadius = std::max(0.0, pixels);
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_hit_radius(int handle, double pixels) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.pointStyle.hitRadius = std::max(0.0, pixels);
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_x_title(int handle, const char* title) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.layout.x.title = title != nullptr ? title : "";
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_x_font_size(int handle, double pixels) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.layout.x.labelFontSize = std::max(6.0, pixels);
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_x_color(int handle, double rgb) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.layout.x.labelColor = colorFromRgb(rgb);
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_x_direction(int handle, double vertical) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.layout.x.labelDirection =
+            vertical != 0.0 ? core::TextDirection::Vertical : core::TextDirection::Horizontal;
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_x_angle(int handle, double degrees) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.layout.x.labelAngle = degrees * (kiriyama::math::kPi / 180.0);
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_y_title(int handle, const char* title) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.layout.y.title = title != nullptr ? title : "";
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_y_font_size(int handle, double pixels) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.layout.y.labelFontSize = std::max(6.0, pixels);
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_y_color(int handle, double rgb) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.layout.y.labelColor = colorFromRgb(rgb);
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_y_direction(int handle, double vertical) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.layout.y.labelDirection =
+            vertical != 0.0 ? core::TextDirection::Vertical : core::TextDirection::Horizontal;
+        slot->line.configDirty = true;
+    }
+}
+
+KIRIYAMA_KEEP void kiriyama_line_set_y_angle(int handle, double degrees) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.config.layout.y.labelAngle = degrees * (kiriyama::math::kPi / 180.0);
+        slot->line.configDirty = true;
+    }
+}
+
+// ================================================================ LineChart · 查询
+
+KIRIYAMA_KEEP int kiriyama_line_hovered_series(int handle) {
+    const Slot* slot = findSlot(handle);
+    return slot == nullptr ? -1 : slot->line.hoveredSeries;
+}
+
+KIRIYAMA_KEEP int kiriyama_line_hovered_point(int handle) {
+    const Slot* slot = findSlot(handle);
+    return slot == nullptr ? -1 : slot->line.hoveredPoint;
+}
+
 // ================================================================ 宿主侧
 
 namespace kiriyama::web {
@@ -743,6 +1032,27 @@ void pumpTable(int handle, scene::TableWidget& table) {
     slot->table.data = {};
 }
 
+void pumpLine(int handle, scene::LineChart& chart) {
+    Slot* slot = findSlot(handle);
+    if (slot == nullptr) {
+        return;
+    }
+    LineState& line = slot->line;
+    if (line.configDirty) {
+        line.configDirty = false;
+        scene::LineChartConfig nextCfg = line.config;
+        nextCfg.textMeasure = chart.config().textMeasure;
+        nextCfg.layout.measureText = nextCfg.textMeasure;
+        chart.setConfig(nextCfg);
+        chart.setPalette(line.palette);
+    }
+    if (line.dataDirty) {
+        line.dataDirty = false;
+        chart.setData(std::move(line.data));
+        line.data = {};
+    }
+}
+
 void applyTooltip(int handle, TooltipHost& tooltip) {
     const Slot* slot = findSlot(handle);
     if (slot == nullptr) {
@@ -773,6 +1083,13 @@ void applyTooltip(int handle, TooltipHost& tooltip) {
 void reportHoveredSlice(int handle, int index) {
     if (Slot* slot = findSlot(handle)) {
         slot->pie.hovered = index;
+    }
+}
+
+void reportHoveredLinePoint(int handle, int seriesIndex, int pointIndex) {
+    if (Slot* slot = findSlot(handle)) {
+        slot->line.hoveredSeries = seriesIndex;
+        slot->line.hoveredPoint = pointIndex;
     }
 }
 

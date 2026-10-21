@@ -53,6 +53,12 @@ using TextMeasureFn = std::function<TextMetrics(std::string_view text, double fo
 [[nodiscard]] TextMetrics measureText(const TextMeasureFn& measure, std::string_view text,
                                       double fontSize);
 
+/// 按文字方向转换字符串：Horizontal 原样返回；Vertical 将 UTF-8 字符按行（'\n'）垂直堆叠。
+[[nodiscard]] std::string formatTextDirection(std::string_view text, TextDirection direction);
+
+/// 计算文本排版盒旋转 angle（弧度）后的轴对齐外接盒（AABB）尺寸。
+[[nodiscard]] TextMetrics rotatedTextMetrics(const TextMetrics& metrics, double angle) noexcept;
+
 /// 根据锚点坐标与对齐方式（水平 Left/Center/Right，垂直 Top/Middle/Bottom）计算文本排版矩形。
 [[nodiscard]] constexpr RectD alignTextFrame(Vec2d anchor, const TextMetrics& metrics,
                                              TextAlign horizontal,
@@ -91,6 +97,22 @@ struct AxisOptions {
     /// 标签与轴线的间距。
     double labelGap{6.0};
     TickFormat format{};
+
+    /// 自定义刻度文本列表（X 轴、Y 轴均可传入）。
+    /// 非空时，该轴刻度直接显示这里的字符串。
+    std::vector<std::string> tickLabels{};
+
+    /// 刻度与标题文字颜色；alpha == 0 时跟随主题 ColorToken::Label。
+    Color labelColor{};
+    Color titleColor{};
+
+    /// 刻度文字方向（横排 Horizontal / 竖排 Vertical）与旋转偏移角（弧度，顺时针为正）。
+    TextDirection labelDirection{TextDirection::Horizontal};
+    double labelAngle{0.0};
+
+    /// 轴标题文字方向与旋转偏移角（弧度）。
+    TextDirection titleDirection{TextDirection::Horizontal};
+    double titleAngle{0.0};
 };
 
 struct LayoutOptions {

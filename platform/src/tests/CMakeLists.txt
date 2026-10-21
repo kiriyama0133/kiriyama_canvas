@@ -2,6 +2,7 @@ add_executable(kiriyama_text_tests
     AnimationTest.cc
     AppTest.cc
     DragTest.cc
+    LineChartTest.cc
     PainterTest.cc
     PieChartTest.cc
     SparkBarTest.cc

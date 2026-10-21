@@ -53,6 +53,7 @@
 #include "kiriyama/core/Layout.h"
 #include "kiriyama/core/SparkBar.h"
 #include "kiriyama/render/TooltipHost.h"
+#include "kiriyama/scene/LineChart.h"
 #include "kiriyama/scene/PieChart.h"
 #include "kiriyama/scene/SparkBar.h"
 #include "kiriyama/scene/TableWidget.h"
@@ -177,6 +178,51 @@ void kiriyama_sparkbar_set_height_ratio(int handle, double ratio);
 
 void kiriyama_table_load(int handle, const char* text);
 
+// ================================================================ LineChart · 数据
+
+void kiriyama_line_begin(int handle);
+void kiriyama_line_add_x_label(int handle, const char* label);
+void kiriyama_line_add_y_label(int handle, const char* label);
+void kiriyama_line_begin_series(int handle, const char* name, double rgb);
+void kiriyama_line_add_point(int handle, double x, double y);
+void kiriyama_line_end_series(int handle);
+void kiriyama_line_commit(int handle);
+
+// ================================================================ LineChart · 配置与样式
+
+void kiriyama_line_set_title(int handle, const char* title);
+void kiriyama_line_set_curve(int handle, double monotone);
+void kiriyama_line_set_line_width(int handle, double pixels);
+void kiriyama_line_set_show_area(int handle, double enabled);
+void kiriyama_line_set_area_opacity(int handle, double opacity);
+void kiriyama_line_set_show_grid(int handle, double enabled);
+
+void kiriyama_line_set_point_radius(int handle, double pixels);
+void kiriyama_line_set_hover_point_radius(int handle, double pixels);
+void kiriyama_line_set_halo_radius(int handle, double pixels);
+void kiriyama_line_set_hit_radius(int handle, double pixels);
+
+void kiriyama_line_set_x_title(int handle, const char* title);
+void kiriyama_line_set_x_font_size(int handle, double pixels);
+void kiriyama_line_set_x_color(int handle, double rgb);
+/// 0 = Horizontal（横排），!= 0 = Vertical（竖排）
+void kiriyama_line_set_x_direction(int handle, double vertical);
+/// 刻度旋转偏移角（度，顺时针为正）
+void kiriyama_line_set_x_angle(int handle, double degrees);
+
+void kiriyama_line_set_y_title(int handle, const char* title);
+void kiriyama_line_set_y_font_size(int handle, double pixels);
+void kiriyama_line_set_y_color(int handle, double rgb);
+/// 0 = Horizontal（横排），!= 0 = Vertical（竖排）
+void kiriyama_line_set_y_direction(int handle, double vertical);
+/// 刻度旋转偏移角（度，顺时针为正）
+void kiriyama_line_set_y_angle(int handle, double degrees);
+
+// ================================================================ LineChart · 查询
+
+int kiriyama_line_hovered_series(int handle);
+int kiriyama_line_hovered_point(int handle);
+
 }  // extern "C"
 
 namespace kiriyama::web {
@@ -186,6 +232,7 @@ enum class Component : int {
     Pie = 0,
     SparkBar = 1,
     Table = 2,
+    Line = 3,
 };
 
 /// 宿主用来同步实例集合：一个句柄 = 一个实例。
@@ -213,11 +260,17 @@ void pumpSparkBar(int handle, scene::SparkBar& bar);
 /// Table 的宿主侧消费：pending 数据 → 组件。
 void pumpTable(int handle, scene::TableWidget& table);
 
+/// LineChart 的宿主侧消费：pending 数据 / 配置 → 组件。
+void pumpLine(int handle, scene::LineChart& line);
+
 /// 把一个实例的气泡配置喂给宿主唯一的 TooltipHost。
 /// 指针落在哪个实例上就喂哪个（气泡语义互斥，一页只有一个）。
 void applyTooltip(int handle, render::TooltipHost& tooltip);
 
 /// 宿主上报某实例本帧 hover 的扇区下标（-1 = 没有），供 kiriyama_pie_hovered() 查询。
 void reportHoveredSlice(int handle, int index);
+
+/// 宿主上报某折线图实例本帧 hover 的节点（-1 = 没有）。
+void reportHoveredLinePoint(int handle, int seriesIndex, int pointIndex);
 
 }  // namespace kiriyama::web

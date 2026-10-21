@@ -26,6 +26,7 @@
 #include "kiriyama/render/SceneHost.h"
 #include "kiriyama/render/TooltipHost.h"
 #include "kiriyama/render/TtfFont.h"
+#include "kiriyama/scene/LineChart.h"
 #include "kiriyama/scene/PieChart.h"
 #include "kiriyama/scene/SparkBar.h"
 #include "kiriyama/scene/TableWidget.h"
@@ -46,6 +47,8 @@ using kiriyama::render::FontLibrary;
 using kiriyama::render::TooltipHost;
 using kiriyama::render::drawSceneGeometry;
 using kiriyama::render::frameContext;
+using kiriyama::scene::LineChart;
+using kiriyama::scene::LinePointNode;
 using kiriyama::scene::PieChart;
 using kiriyama::scene::SparkBar;
 using kiriyama::scene::TableStyle;
@@ -55,7 +58,7 @@ using kiriyama::web::InstanceInfo;
 
 std::shared_ptr<const FontFace> gBodyFace;
 
-/// 一个实例 = 一个组件节点。所有组件（Pie / SparkBar / Table）都不再需要专属 Renderer：
+/// 一个实例 = 一个组件节点。所有组件（Pie / SparkBar / Table / Line）都不再需要专属 Renderer：
 /// 几何统一走 drawSceneGeometry（渲染树通用遍历），文本统一走 TextRenderer::drawScene。
 struct Instance {
     Component type{Component::Pie};
@@ -64,6 +67,7 @@ struct Instance {
     PieChart* pie{nullptr};
     SparkBar* spark{nullptr};
     TableWidget* table{nullptr};
+    LineChart* line{nullptr};
 };
 
 class CanvasHost final : public kiriyama::render::AppDelegate {
@@ -148,6 +152,13 @@ public:
                                      instance->pie->hoveredIndex() != core::kInvalidIndex;
                 kiriyama::web::reportHoveredSlice(
                     handle, hovered ? static_cast<int>(instance->pie->hoveredIndex()) : -1);
+            } else if (instance->line != nullptr) {
+                const LinePointNode* hoveredNode =
+                    instance->line->visible() ? instance->line->hoveredPointNode() : nullptr;
+                kiriyama::web::reportHoveredLinePoint(
+                    handle,
+                    hoveredNode != nullptr ? static_cast<int>(hoveredNode->seriesIndex()) : -1,
+                    hoveredNode != nullptr ? static_cast<int>(hoveredNode->pointIndex()) : -1);
             }
         }
 
@@ -240,6 +251,21 @@ private:
                 root_->appendChild(std::move(node));
                 break;
             }
+            case Component::Line: {
+                auto node = std::make_unique<LineChart>("line");
+                node->setTextMeasure(
+                    [&textRenderer = app.text()](std::string_view text, double fontSize) {
+                        const auto& face = textRenderer.defaultFace()
+                                               ? textRenderer.defaultFace()
+                                               : Font::builtinFace();
+                        const kiriyama::render::TextLayout layout =
+                            textRenderer.measure(text, Font{face, fontSize}, {});
+                        return core::TextMetrics{layout.boxWidth, layout.height};
+                    });
+                instance->line = node.get();
+                root_->appendChild(std::move(node));
+                break;
+            }
         }
         return instance;
     }
@@ -270,6 +296,8 @@ private:
             kiriyama::web::pumpSparkBar(handle, *instance.spark);
         } else if (instance.table != nullptr) {
             kiriyama::web::pumpTable(handle, *instance.table);
+        } else if (instance.line != nullptr) {
+            kiriyama::web::pumpLine(handle, *instance.line);
         }
     }
 
@@ -280,7 +308,10 @@ private:
         if (instance.spark != nullptr) {
             return instance.spark;
         }
-        return instance.table;
+        if (instance.table != nullptr) {
+            return instance.table;
+        }
+        return instance.line;
     }
 
     /// 指针落在哪个实例上（0 = 没有）。重叠时取后挂的那个（画在上面）。

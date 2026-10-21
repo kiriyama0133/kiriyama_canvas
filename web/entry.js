@@ -53,12 +53,12 @@
 
   /// 组件类型表。字符串数组而不是对象字面量：--closure=1 会重命名对象字面量
   /// 的无引号键，按字符串动态查表的老写法会查不到。
-  var COMPONENT_TYPES = ['pie', 'sparkbar', 'table'];
+  var COMPONENT_TYPES = ['pie', 'sparkbar', 'table', 'line'];
 
   function componentKey(type) {
     var key = String(type).toLowerCase();
     if (COMPONENT_TYPES.indexOf(key) < 0) {
-      throw new Error('未知组件 "' + type + '"（pie / sparkbar / table）');
+      throw new Error('未知组件 "' + type + '"（pie / sparkbar / table / line）');
     }
     return key;
   }
@@ -320,6 +320,128 @@
     return true;
   };
 
+  // ================================================================ LineChart
+
+  function directionFlag(value) {
+    if (typeof value === 'number') {
+      return value !== 0 ? 1 : 0;
+    }
+    var text = String(value || '').toLowerCase();
+    return (text === 'vertical' || text === 'vert' || text === 'v') ? 1 : 0;
+  }
+
+  function curveFlag(value) {
+    if (typeof value === 'number') {
+      return value !== 0 ? 1 : 0;
+    }
+    var text = String(value || '').toLowerCase();
+    return (text === 'monotone' || text === 'smooth' || text === 'spline') ? 1 : 0;
+  }
+
+  var LINE_AXIS_X_SETTERS = [
+    ['title',     function (h, v) { withHandle(h, 'kiriyama_line_set_x_title', ['string'], [String(v || '')]); }],
+    ['fontSize',  function (h, v) { withHandle(h, 'kiriyama_line_set_x_font_size', ['number'], [Number(v)]); }],
+    ['color',     function (h, v) { withHandle(h, 'kiriyama_line_set_x_color', ['number'], [colorValue(v)]); }],
+    ['direction', function (h, v) { withHandle(h, 'kiriyama_line_set_x_direction', ['number'], [directionFlag(v)]); }],
+    ['angle',     function (h, v) { withHandle(h, 'kiriyama_line_set_x_angle', ['number'], [Number(v)]); }]
+  ];
+
+  var LINE_AXIS_Y_SETTERS = [
+    ['title',     function (h, v) { withHandle(h, 'kiriyama_line_set_y_title', ['string'], [String(v || '')]); }],
+    ['fontSize',  function (h, v) { withHandle(h, 'kiriyama_line_set_y_font_size', ['number'], [Number(v)]); }],
+    ['color',     function (h, v) { withHandle(h, 'kiriyama_line_set_y_color', ['number'], [colorValue(v)]); }],
+    ['direction', function (h, v) { withHandle(h, 'kiriyama_line_set_y_direction', ['number'], [directionFlag(v)]); }],
+    ['angle',     function (h, v) { withHandle(h, 'kiriyama_line_set_y_angle', ['number'], [Number(v)]); }]
+  ];
+
+  var LINE_OPTION_SETTERS = [
+    ['title',            function (h, v) { withHandle(h, 'kiriyama_line_set_title', ['string'], [String(v || '')]); }],
+    ['curve',            function (h, v) { withHandle(h, 'kiriyama_line_set_curve', ['number'], [curveFlag(v)]); }],
+    ['lineWidth',        function (h, v) { withHandle(h, 'kiriyama_line_set_line_width', ['number'], [Number(v)]); }],
+    ['showArea',         function (h, v) { withHandle(h, 'kiriyama_line_set_show_area', ['number'], [v ? 1 : 0]); }],
+    ['areaOpacity',      function (h, v) { withHandle(h, 'kiriyama_line_set_area_opacity', ['number'], [Number(v)]); }],
+    ['showGrid',         function (h, v) { withHandle(h, 'kiriyama_line_set_show_grid', ['number'], [v ? 1 : 0]); }],
+    ['pointRadius',      function (h, v) { withHandle(h, 'kiriyama_line_set_point_radius', ['number'], [Number(v)]); }],
+    ['hoverPointRadius', function (h, v) { withHandle(h, 'kiriyama_line_set_hover_point_radius', ['number'], [Number(v)]); }],
+    ['haloRadius',       function (h, v) { withHandle(h, 'kiriyama_line_set_halo_radius', ['number'], [Number(v)]); }],
+    ['hitRadius',        function (h, v) { withHandle(h, 'kiriyama_line_set_hit_radius', ['number'], [Number(v)]); }],
+    ['xTitle',           function (h, v) { withHandle(h, 'kiriyama_line_set_x_title', ['string'], [String(v || '')]); }],
+    ['xFontSize',        function (h, v) { withHandle(h, 'kiriyama_line_set_x_font_size', ['number'], [Number(v)]); }],
+    ['xColor',           function (h, v) { withHandle(h, 'kiriyama_line_set_x_color', ['number'], [colorValue(v)]); }],
+    ['xDirection',       function (h, v) { withHandle(h, 'kiriyama_line_set_x_direction', ['number'], [directionFlag(v)]); }],
+    ['xAngle',           function (h, v) { withHandle(h, 'kiriyama_line_set_x_angle', ['number'], [Number(v)]); }],
+    ['yTitle',           function (h, v) { withHandle(h, 'kiriyama_line_set_y_title', ['string'], [String(v || '')]); }],
+    ['yFontSize',        function (h, v) { withHandle(h, 'kiriyama_line_set_y_font_size', ['number'], [Number(v)]); }],
+    ['yColor',           function (h, v) { withHandle(h, 'kiriyama_line_set_y_color', ['number'], [colorValue(v)]); }],
+    ['yDirection',       function (h, v) { withHandle(h, 'kiriyama_line_set_y_direction', ['number'], [directionFlag(v)]); }],
+    ['yAngle',           function (h, v) { withHandle(h, 'kiriyama_line_set_y_angle', ['number'], [Number(v)]); }],
+    ['xAxis',            function (h, v) { applyOptions(h, v, LINE_AXIS_X_SETTERS); }],
+    ['yAxis',            function (h, v) { applyOptions(h, v, LINE_AXIS_Y_SETTERS); }],
+    ['tooltipArrowWidth',    function (h, v) { withHandle(h, 'kiriyama_tooltip_set_arrow_width', ['number'], [Number(v)]); }],
+    ['tooltipFontSize',      function (h, v) { withHandle(h, 'kiriyama_tooltip_set_font_size', ['number'], [Number(v)]); }],
+    ['tooltipSide',          function (h, v) { withHandle(h, 'kiriyama_tooltip_set_side', ['number'], [tooltipSideIndex(v)]); }],
+    ['tooltipFollowPointer', function (h, v) { withHandle(h, 'kiriyama_tooltip_set_follow_pointer', ['number'], [v ? 1 : 0]); }]
+  ];
+
+  /// loadLine(handle, model)
+  Module['loadLine'] = function (handle, model) {
+    if (typeof model === 'string') {
+      model = JSON.parse(model);
+    }
+    if (!model || !model['series']) {
+      throw new Error('loadLine: 缺少 model.series');
+    }
+
+    var h = handle | 0;
+    var cfg = model['config'] || model['options'] || {};
+    applyOptions(h, cfg, LINE_OPTION_SETTERS);
+
+    var xAxisCfg = cfg['xAxis'] || {};
+    var yAxisCfg = cfg['yAxis'] || {};
+    var xLabels = model['xLabels'] || model['categories'] || xAxisCfg['labels'] || [];
+    var yLabels = model['yLabels'] || yAxisCfg['labels'] || [];
+    var series = model['series'] || [];
+
+    withHandle(h, 'kiriyama_line_begin', [], []);
+    for (var xi = 0; xi < xLabels.length; xi++) {
+      withHandle(h, 'kiriyama_line_add_x_label', ['string'], [String(xLabels[xi])]);
+    }
+    for (var yi = 0; yi < yLabels.length; yi++) {
+      withHandle(h, 'kiriyama_line_add_y_label', ['string'], [String(yLabels[yi])]);
+    }
+    for (var s = 0; s < series.length; s++) {
+      var item = series[s];
+      var name = item['name'] == null ? '' : String(item['name']);
+      withHandle(h, 'kiriyama_line_begin_series', ['string', 'number'],
+                 [name, colorValue(item['color'])]);
+      var pts = item['points'] || item['values'] || [];
+      for (var p = 0; p < pts.length; p++) {
+        var pt = pts[p];
+        var px = p;
+        var py = NaN;
+        if (pt !== null && typeof pt === 'object') {
+          px = pt['x'] == null ? p : Number(pt['x']);
+          py = pt['y'] == null ? NaN : Number(pt['y']);
+        } else if (pt !== null && pt !== undefined) {
+          py = Number(pt);
+        }
+        withHandle(h, 'kiriyama_line_add_point', ['number', 'number'],
+                   [isNaN(px) ? p : px, isNaN(py) ? NaN : py]);
+      }
+      withHandle(h, 'kiriyama_line_end_series', [], []);
+    }
+    withHandle(h, 'kiriyama_line_commit', [], []);
+    return true;
+  };
+
+  Module['lineHoveredSeries'] = function (handle) {
+    return withHandle(handle | 0, 'kiriyama_line_hovered_series', [], []);
+  };
+
+  Module['lineHoveredPoint'] = function (handle) {
+    return withHandle(handle | 0, 'kiriyama_line_hovered_point', [], []);
+  };
+
   // ================================================================ 一步挂载
   // mount(type, frame, model) = create + show + load。返回句柄，之后可以
   // showComponent 挪位置、load* 换数据、destroyComponent 摘掉。
@@ -328,7 +450,8 @@
   var LOADERS = [
     ['pie', function (h, model) { Module['loadPie'](h, model); }],
     ['sparkbar', function (h, model) { Module['loadSparkBar'](h, model); }],
-    ['table', function (h, model) { Module['loadTable'](h, model); }]
+    ['table', function (h, model) { Module['loadTable'](h, model); }],
+    ['line', function (h, model) { Module['loadLine'](h, model); }]
   ];
 
   function loadInto(handle, key, model) {

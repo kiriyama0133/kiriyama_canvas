@@ -98,6 +98,29 @@ struct DraftAxis {
     return draft;
 }
 
+/// 文本轴自定义刻度（用于折线图 X/Y 轴刻度 Text）：在 domain 上均匀分布 labels，支持 stride 抽稀。
+void applyCustomTickLabels(DraftAxis& draft, const std::vector<std::string>& labels, int stride = 1) {
+    if (labels.empty()) {
+        return;
+    }
+    draft.values.clear();
+    draft.labels.clear();
+    const std::size_t count = labels.size();
+    if (count == 1) {
+        draft.values.push_back(draft.domain.midpoint());
+        draft.labels.push_back(labels.front());
+        draft.step = draft.domain.span() > 0.0 ? draft.domain.span() : 1.0;
+        return;
+    }
+    const int step = std::max(1, stride);
+    draft.step = draft.domain.span() / static_cast<double>(count - 1);
+    for (std::size_t i = 0; i < count; i += static_cast<std::size_t>(step)) {
+        const double ratio = static_cast<double>(i) / static_cast<double>(count - 1);
+        draft.values.push_back(draft.domain.minimum() + draft.domain.span() * ratio);
+        draft.labels.push_back(labels[i]);
+    }
+}
+
 [[nodiscard]] std::string tickLabel(const DraftAxis& draft, const AxisOptions& options,
                                     std::size_t index) {
     if (index < draft.labels.size()) {
@@ -106,11 +129,19 @@ struct DraftAxis {
     return options.format.format(draft.values[index], draft.step);
 }
 
+[[nodiscard]] TextMetrics measureSingleTick(std::string_view rawLabel, const AxisOptions& options,
+                                            const TextMeasureFn& measure) {
+    const std::string directed = formatTextDirection(rawLabel, options.labelDirection);
+    const TextMetrics base = measure(directed, options.labelFontSize);
+    return rotatedTextMetrics(base, options.labelAngle);
+}
+
 [[nodiscard]] TextMetrics measureTicks(const DraftAxis& draft, const AxisOptions& options,
                                        const TextMeasureFn& measure) {
     TextMetrics total{0.0, 0.0};
     for (std::size_t i = 0; i < draft.values.size(); ++i) {
-        const TextMetrics one = measure(tickLabel(draft, options, i), options.labelFontSize);
+        const TextMetrics one =
+            measureSingleTick(tickLabel(draft, options, i), options, measure);
         total.width = std::max(total.width, one.width);
         total.height = std::max(total.height, one.height);
     }
@@ -132,7 +163,7 @@ struct DraftAxis {
 
     for (std::size_t i = 0; i < draft.values.size(); ++i) {
         const double width =
-            measure(tickLabel(draft, options, i), options.labelFontSize).width;
+            measureSingleTick(tickLabel(draft, options, i), options, measure).width;
         widths.push_back(width);
 
         const double position = axis.map(draft.values[i]);
@@ -225,7 +256,7 @@ struct DraftAxis {
         mark.position = out.axis.map(mark.value);
         mark.label = tickLabel(draft, options, i);
 
-        const TextMetrics metrics = measure(mark.label, options.labelFontSize);
+        const TextMetrics metrics = measureSingleTick(mark.label, options, measure);
         out.labelWidth = std::max(out.labelWidth, metrics.width);
         out.labelHeight = std::max(out.labelHeight, metrics.height);
         out.ticks.push_back(std::move(mark));
@@ -242,25 +273,37 @@ TextMetrics defaultTextMeasure(std::string_view text, double fontSize) {
         return {0.0, 0.0};
     }
 
-    double width = 0.0;
+    double maxWidth = 0.0;
+    double lineWidth = 0.0;
+    std::size_t lineCount = 1;
     for (const char raw : text) {
+        if (raw == '\r') {
+            continue;
+        }
+        if (raw == '\n') {
+            maxWidth = std::max(maxWidth, lineWidth);
+            lineWidth = 0.0;
+            ++lineCount;
+            continue;
+        }
         const auto byte = static_cast<unsigned char>(raw);
         if ((byte & 0xC0) == 0x80) {
             continue;  // UTF-8 续字节，宽度算在首字节上
         }
         if (byte >= 0x80) {
-            width += fontSize;  // CJK / 全角
+            lineWidth += fontSize;  // CJK / 全角
         } else if (byte == ' ') {
-            width += fontSize * 0.3;
+            lineWidth += fontSize * 0.3;
         } else if (byte == '.' || byte == ',' || byte == ':' || byte == ';' || byte == '|') {
-            width += fontSize * 0.3;
+            lineWidth += fontSize * 0.3;
         } else if (byte == '-' || byte == '+') {
-            width += fontSize * 0.36;
+            lineWidth += fontSize * 0.36;
         } else {
-            width += fontSize * 0.6;
+            lineWidth += fontSize * 0.6;
         }
     }
-    return {width, fontSize * 1.25};
+    maxWidth = std::max(maxWidth, lineWidth);
+    return {maxWidth, static_cast<double>(lineCount) * fontSize * 1.25};
 }
 
 TextMetrics measureText(const TextMeasureFn& measure, std::string_view text, double fontSize) {
@@ -273,6 +316,60 @@ TextMetrics measureText(const TextMeasureFn& measure, std::string_view text, dou
         metrics.height = fontSize * 1.25;
     }
     return metrics;
+}
+
+std::string formatTextDirection(std::string_view text, TextDirection direction) {
+    if (direction == TextDirection::Horizontal || text.empty()) {
+        return std::string{text};
+    }
+
+    std::string out;
+    out.reserve(text.size() * 2);
+    bool needNewline = false;
+    for (std::size_t i = 0; i < text.size();) {
+        const auto lead = static_cast<unsigned char>(text[i]);
+        if (lead == '\r') {
+            ++i;
+            continue;
+        }
+        if (lead == '\n') {
+            out.push_back('\n');
+            needNewline = false;
+            ++i;
+            continue;
+        }
+        std::size_t charBytes = 1;
+        if ((lead & 0x80u) == 0u) {
+            charBytes = 1;
+        } else if ((lead & 0xE0u) == 0xC0u) {
+            charBytes = 2;
+        } else if ((lead & 0xF0u) == 0xE0u) {
+            charBytes = 3;
+        } else if ((lead & 0xF8u) == 0xF0u) {
+            charBytes = 4;
+        }
+        charBytes = std::min(charBytes, text.size() - i);
+
+        if (needNewline) {
+            out.push_back('\n');
+        }
+        out.append(text.substr(i, charBytes));
+        needNewline = true;
+        i += charBytes;
+    }
+    return out;
+}
+
+TextMetrics rotatedTextMetrics(const TextMetrics& metrics, double angle) noexcept {
+    if (std::abs(angle) <= 1e-6 || (metrics.width <= 0.0 && metrics.height <= 0.0)) {
+        return metrics;
+    }
+    const double c = std::abs(std::cos(angle));
+    const double s = std::abs(std::sin(angle));
+    return {
+        c * metrics.width + s * metrics.height,
+        s * metrics.width + c * metrics.height,
+    };
 }
 
 // ---------------------------------------------------------------- 多轴对齐
@@ -337,6 +434,9 @@ ChartLayout computeLayout(Vec2d canvasSize, const DataBounds& bounds,
     DraftAxis yDraft = options.y.scale == ScaleType::Log
                            ? draftLog(yData, options.y, options.y.targetTickCount)
                            : draftLinear(yData, options.y, options.y.targetTickCount);
+    if (!options.y.tickLabels.empty()) {
+        applyCustomTickLabels(yDraft, options.y.tickLabels);
+    }
 
     // ---- y 轴（右）草稿
     DraftAxis secondaryDraft;
@@ -351,7 +451,8 @@ ChartLayout computeLayout(Vec2d canvasSize, const DataBounds& bounds,
 
         // 两个线性轴才谈得上网格对齐；对数轴段数由数量级决定，不强行拉平。
         if (options.y.scale == ScaleType::Linear &&
-            options.secondaryY.scale == ScaleType::Linear) {
+            options.secondaryY.scale == ScaleType::Linear &&
+            options.y.tickLabels.empty() && options.secondaryY.tickLabels.empty()) {
             const AlignedDomains aligned = alignYDomains(
                 yDraft.domain, secondaryDraft.domain,
                 std::max(options.y.targetTickCount, options.secondaryY.targetTickCount));
@@ -364,6 +465,9 @@ ChartLayout computeLayout(Vec2d canvasSize, const DataBounds& bounds,
             secondaryDraft.values = evenTickValues(aligned.secondary, aligned.intervals);
             secondaryDraft.step =
                 aligned.secondary.span() / static_cast<double>(aligned.intervals);
+        }
+        if (!options.secondaryY.tickLabels.empty()) {
+            applyCustomTickLabels(secondaryDraft, options.secondaryY.tickLabels);
         }
     }
 
@@ -408,7 +512,7 @@ ChartLayout computeLayout(Vec2d canvasSize, const DataBounds& bounds,
     const double plotLeft = std::clamp(left, 0.0, canvasWidth);
     const double plotTop = std::clamp(top, 0.0, canvasHeight);
     const double plotRight = std::max(plotLeft, std::clamp(canvasWidth - right, 0.0, canvasWidth));
-    const double plotBottom =
+    double plotBottom =
         std::max(plotTop, std::clamp(canvasHeight - bottom, 0.0, canvasHeight));
     layout.plot = RectD::FromLTRB(plotLeft, plotTop, plotRight, plotBottom);
     layout.valid = layout.plot.width >= options.minPlotWidth &&
@@ -425,6 +529,24 @@ ChartLayout computeLayout(Vec2d canvasSize, const DataBounds& bounds,
                    !tickLabelsFit(xDraft, options.x, measure, layout.plot, canvasWidth)) {
                 ++stride;
                 xDraft = draftCategory(options.categoryLabels, stride);
+            }
+        }
+    } else if (!options.x.tickLabels.empty()) {
+        const std::size_t labelCount = options.x.tickLabels.size();
+        const RangeD defaultDomain{0.0, static_cast<double>(labelCount > 1 ? labelCount - 1 : 1)};
+        const RangeD xDomain = (bounds.hasData && !bounds.x.degenerate())
+                                   ? bounds.x
+                                   : defaultDomain;
+        int stride = 1;
+        const int count = static_cast<int>(labelCount);
+        xDraft.scale = ScaleType::Linear;
+        xDraft.domain = ensureSpan(xDomain);
+        applyCustomTickLabels(xDraft, options.x.tickLabels, stride);
+        if (options.x.visible && options.x.avoidLabelOverlap) {
+            while (stride < count &&
+                   !tickLabelsFit(xDraft, options.x, measure, layout.plot, canvasWidth)) {
+                ++stride;
+                applyCustomTickLabels(xDraft, options.x.tickLabels, stride);
             }
         }
     } else {
@@ -447,6 +569,20 @@ ChartLayout computeLayout(Vec2d canvasSize, const DataBounds& bounds,
                     break;
                 }
             }
+        }
+    }
+
+    // 若 X 轴刻度开启了竖排或偏移旋转角度，标签高度可能高于单行数字，据此向上收紧 plotBottom。
+    if (options.x.visible &&
+        (options.x.labelDirection == TextDirection::Vertical ||
+         std::abs(options.x.labelAngle) > 1e-6)) {
+        const double measuredHeight = measureTicks(xDraft, options.x, measure).height;
+        if (measuredHeight > xLabelHeight) {
+            bottom += measuredHeight - xLabelHeight;
+            plotBottom = std::max(plotTop, std::clamp(canvasHeight - bottom, 0.0, canvasHeight));
+            layout.plot = RectD::FromLTRB(plotLeft, plotTop, plotRight, plotBottom);
+            layout.valid = layout.plot.width >= options.minPlotWidth &&
+                           layout.plot.height >= options.minPlotHeight;
         }
     }
 

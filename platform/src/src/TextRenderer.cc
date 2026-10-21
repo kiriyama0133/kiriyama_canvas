@@ -280,8 +280,43 @@ void SdlTextRenderer::drawNode(const core::SceneNode& node, double inheritedOpac
         return;
     }
 
-    // 文本只能平移：字形是轴对齐贴图，旋转 / 斜切会被忽略。
-    const Vec2d origin = node.worldTransform().apply(placeTextBox(frame, layout, style.textBaseline));
+    const math::Affine2D world = node.worldTransform();
+    const Vec2d localOrigin = placeTextBox(frame, layout, style.textBaseline);
+    const double angleRad = std::atan2(world.m10, world.m00);
+    if (std::abs(angleRad) > 1e-4) {
+        if (const auto* face = dynamic_cast<const TtfFontFace*>(&font.face());
+            face != nullptr && lines_) {
+            const SDL_Color tint = toSdlColor(fill, opacity);
+            if (tint.a == 0) {
+                return;
+            }
+            const double angleDeg = angleRad * (180.0 / 3.14159265358979323846);
+            const SDL_FPoint pivot{0.0f, 0.0f};
+            for (const TextLine& line : layout.lines) {
+                if (line.text.empty()) {
+                    continue;
+                }
+                const LineCache::Entry& run = lines_->get(*face, line.text, font.size());
+                if (run.texture != nullptr) {
+                    const Vec2d topLeft = world.apply(
+                        {localOrigin.x + line.x,
+                         localOrigin.y + line.baseline - layout.metrics.ascent});
+                    const SDL_FRect destination{static_cast<float>(topLeft.x),
+                                                static_cast<float>(topLeft.y), run.width,
+                                                run.height};
+                    SDL_SetTextureColorMod(run.texture, tint.r, tint.g, tint.b);
+                    SDL_SetTextureAlphaMod(run.texture, tint.a);
+                    SDL_RenderTextureRotated(renderer_, run.texture, nullptr, &destination,
+                                             angleDeg, &pivot, SDL_FLIP_NONE);
+                }
+                ++lineCount_;
+                glyphCount_ += codepointCount(line.text);
+            }
+            return;
+        }
+    }
+
+    const Vec2d origin = world.apply(localOrigin);
     drawLayout(layout, origin, font, fill, opacity, options.letterSpacing);
 }
 

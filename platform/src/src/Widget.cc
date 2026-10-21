@@ -256,8 +256,9 @@ namespace {
             if (widget->stopPointerPropagation()) {
                 consumed = true;
             }
-            if (widget->style().cursor != core::CursorShape::Default) {
-                return widget->style().cursor;
+            const core::CursorShape wc = widget->cursorAt(worldPoint);
+            if (wc != core::CursorShape::Default) {
+                return wc;
             }
         }
     }
